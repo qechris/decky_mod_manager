@@ -1,0 +1,11 @@
+{
+  "name": "Mod Manager",
+  "author": "deck",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["mods", "games", "utility"],
+    "description": "Install, enable, disable, and remove game mods directly from Game Mode. Stores mods in a managed library and toggles them on disk via symlinks, backing up any overwritten vanilla files.",
+    "image": ""
+  }
+}

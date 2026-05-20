@@ -1,0 +1,4 @@
+{
+  "extends": "@decky/rollup/tsconfig",
+  "include": ["src", "src/@types"]
+}
