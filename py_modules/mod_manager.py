@@ -1,4 +1,8 @@
-"""Core mod manager logic — game discovery, mod install/enable/disable/uninstall.
+"""Core mod manager — game discovery, install/enable/disable/uninstall.
+
+Per-game behavior is delegated to ``handlers.get_handler(appid)``. This module
+owns: state persistence, the on-disk library layout, archive extraction, and
+the Steam library scan.
 
 State layout (under ``data_dir``):
 
@@ -11,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import shutil
 import tarfile
@@ -20,7 +23,9 @@ import uuid
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+from handlers import BaseHandler, get_handler
 
 try:
     import decky  # type: ignore
@@ -55,6 +60,8 @@ class Mod:
     enabled: bool = False
     installed_at: float = field(default_factory=time.time)
     files: list[str] = field(default_factory=list)  # relative paths inside game dir
+    source: str = "local"  # "local" or "nexus"
+    nexus_mod_id: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,10 +92,14 @@ class ModManager:
             _LOG.warning("mod-manager: state load failed (%s); starting fresh", e)
             self._state = {}
             return
-        self._state = {
-            game_id: {mod_id: Mod(**mod) for mod_id, mod in mods.items()}
-            for game_id, mods in raw.items()
-        }
+        self._state = {}
+        for game_id, mods in raw.items():
+            self._state[game_id] = {}
+            for mod_id, mod in mods.items():
+                # Tolerate older state lacking new fields.
+                mod.setdefault("source", "local")
+                mod.setdefault("nexus_mod_id", None)
+                self._state[game_id][mod_id] = Mod(**mod)
 
     def _save_state(self) -> None:
         serializable = {
@@ -135,12 +146,10 @@ class ModManager:
                 if not m:
                     continue
                 appid = m.group("appid")
-                name = m.group("name")
-                installdir = m.group("installdir")
-                install_path = apps_dir / "common" / installdir
+                install_path = apps_dir / "common" / m.group("installdir")
                 if not install_path.exists():
                     continue
-                seen[appid] = Game(id=appid, name=name, install_path=str(install_path))
+                seen[appid] = Game(id=appid, name=m.group("name"), install_path=str(install_path))
 
         return sorted(seen.values(), key=lambda g: g.name.lower())
 
@@ -155,15 +164,20 @@ class ModManager:
     def get_mod(self, game_id: str, mod_id: str) -> Mod | None:
         return self._state.get(game_id, {}).get(mod_id)
 
+    def handler_for(self, game_id: str) -> BaseHandler:
+        return get_handler(game_id)
+
     # ----------------------------------------------------------- install
 
-    async def install_mod(
+    async def install_archive(
         self,
         game_id: str,
         archive_path: str,
         display_name: str | None = None,
+        *,
+        source: str = "local",
+        nexus_mod_id: int | None = None,
     ) -> Mod:
-        """Extract ``archive_path`` into the mod library. Does not enable it."""
         archive = Path(archive_path).expanduser()
         if not archive.exists():
             raise FileNotFoundError(f"archive not found: {archive}")
@@ -174,9 +188,9 @@ class ModManager:
         dest.mkdir(parents=True, exist_ok=True)
 
         await asyncio.to_thread(_extract_archive, archive, dest)
-        _flatten_single_root(dest)
+        self.handler_for(game_id).post_install_payload(dest)
 
-        mod = Mod(id=mod_id, name=name, game_id=game_id)
+        mod = Mod(id=mod_id, name=name, game_id=game_id, source=source, nexus_mod_id=nexus_mod_id)
         self._state.setdefault(game_id, {})[mod_id] = mod
         self._save_state()
         _LOG.info("mod-manager: installed mod %s (%s) for game %s", name, mod_id, game_id)
@@ -190,39 +204,9 @@ class ModManager:
             return mod
         src_root = self.library_dir / game.id / mod_id
         backup_root = self.backups_dir / game.id / mod_id
-        game_root = Path(game.install_path)
-        if not game_root.exists():
-            raise FileNotFoundError(f"game install path missing: {game_root}")
-        backup_root.mkdir(parents=True, exist_ok=True)
-
-        applied: list[str] = []
-        try:
-            for src_file in _iter_files(src_root):
-                rel = src_file.relative_to(src_root)
-                target = game_root / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.exists() or target.is_symlink():
-                    # Back up vanilla file (only if not already a symlink we own)
-                    if not target.is_symlink():
-                        backup_path = backup_root / rel
-                        backup_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(target), str(backup_path))
-                    else:
-                        target.unlink()
-                os.symlink(src_file, target)
-                applied.append(str(rel))
-        except Exception:
-            # Best-effort rollback of partial application
-            for rel_str in applied:
-                _safe_unlink(game_root / rel_str)
-                bk = backup_root / rel_str
-                if bk.exists():
-                    (game_root / rel_str).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(bk), str(game_root / rel_str))
-            raise
-
+        result = self.handler_for(game.id).enable(game, src_root, backup_root)
         mod.enabled = True
-        mod.files = applied
+        mod.files = result.files
         self._save_state()
         return mod
 
@@ -231,20 +215,7 @@ class ModManager:
         if not mod.enabled:
             return mod
         backup_root = self.backups_dir / game.id / mod_id
-        game_root = Path(game.install_path)
-
-        for rel_str in mod.files:
-            target = game_root / rel_str
-            _safe_unlink(target)
-            backup_path = backup_root / rel_str
-            if backup_path.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(backup_path), str(target))
-
-        # Prune empty backup dirs
-        if backup_root.exists():
-            _prune_empty_dirs(backup_root)
-
+        self.handler_for(game.id).disable(game, mod.files, backup_root)
         mod.enabled = False
         mod.files = []
         self._save_state()
@@ -276,7 +247,6 @@ class ModManager:
 
 
 def _extract_archive(archive: Path, dest: Path) -> None:
-    suffixes = "".join(archive.suffixes).lower()
     name = archive.name.lower()
     if name.endswith(".zip"):
         with zipfile.ZipFile(archive) as zf:
@@ -285,7 +255,6 @@ def _extract_archive(archive: Path, dest: Path) -> None:
         with tarfile.open(archive) as tf:
             tf.extractall(dest)
     elif name.endswith(".7z"):
-        # Lazy import — only needed for 7z
         try:
             import py7zr  # type: ignore
         except ImportError as e:
@@ -294,44 +263,19 @@ def _extract_archive(archive: Path, dest: Path) -> None:
             ) from e
         with py7zr.SevenZipFile(archive) as sz:
             sz.extractall(dest)
+    elif name.endswith(".rar"):
+        try:
+            import rarfile  # type: ignore
+        except ImportError as e:
+            raise RuntimeError(
+                "rar archives require the 'rarfile' package; install it or convert the mod to zip"
+            ) from e
+        with rarfile.RarFile(archive) as rf:
+            rf.extractall(dest)
     else:
-        raise ValueError(f"unsupported archive format: {suffixes or archive.name}")
+        raise ValueError(f"unsupported archive format: {archive.name}")
 
 
-def _flatten_single_root(dest: Path) -> None:
-    """If the archive extracted to a single top-level dir, hoist its contents."""
-    entries = [p for p in dest.iterdir() if not p.name.startswith(".")]
-    if len(entries) == 1 and entries[0].is_dir():
-        inner = entries[0]
-        for child in inner.iterdir():
-            shutil.move(str(child), str(dest / child.name))
-        inner.rmdir()
-
-
-def _iter_files(root: Path) -> Iterable[Path]:
-    for p in root.rglob("*"):
-        if p.is_file() or p.is_symlink():
-            yield p
-
-
-def _safe_unlink(path: Path) -> None:
-    try:
-        if path.is_symlink() or path.exists():
-            path.unlink()
-    except OSError as e:
-        _LOG.warning("mod-manager: failed to unlink %s: %s", path, e)
-
-
-def _prune_empty_dirs(root: Path) -> None:
-    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
-        if not dirnames and not filenames and Path(dirpath) != root:
-            try:
-                os.rmdir(dirpath)
-            except OSError:
-                pass
-
-
-# Public helper to serialize Game/Mod for the frontend
 def to_payload(obj: Any) -> Any:
     if isinstance(obj, (Game, Mod)):
         return obj.to_dict()
