@@ -21,7 +21,7 @@ import tarfile
 import time
 import uuid
 import zipfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any
 
@@ -113,14 +113,20 @@ class ModManager:
             _LOG.warning("mod-manager: state load failed (%s); starting fresh", e)
             self._state = {}
             return
+        # The on-disk schema evolves. Tolerate BOTH directions of skew:
+        # - missing fields (older state, newer code) → fill with defaults
+        # - extra fields (newer state, code that removed something, or
+        #   abandoned experimental fields like a previous "status" /
+        #   "error_message" we no longer track) → ignore them
+        known_mod_fields = {f.name for f in dataclass_fields(Mod)}
         self._state = {}
         for game_id, mods in raw.items():
             self._state[game_id] = {}
             for mod_id, mod in mods.items():
-                # Tolerate older state lacking new fields.
                 mod.setdefault("source", "local")
                 mod.setdefault("nexus_mod_id", None)
-                self._state[game_id][mod_id] = Mod(**mod)
+                pruned = {k: v for k, v in mod.items() if k in known_mod_fields}
+                self._state[game_id][mod_id] = Mod(**pruned)
 
     def _save_state(self) -> None:
         serializable = {
