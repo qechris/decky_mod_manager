@@ -31,9 +31,37 @@ from pathlib import Path
 from typing import Any
 
 USER_AGENT = "decky-mod-manager/0.1 (+https://github.com/local)"
-SEARCH_URL = "https://search.nexusmods.com/mods"
 V1_BASE = "https://api.nexusmods.com/v1"
+V2_GRAPHQL_URL = "https://api.nexusmods.com/v2/graphql"
 GAMES_INDEX_URL = f"{V1_BASE}/games.json"
+
+# Nexus retired the undocumented ``search.nexusmods.com/mods`` endpoint
+# (Cloudflare authoritatively returns NXDOMAIN). The replacement is the v2
+# GraphQL API at ``api.nexusmods.com/v2/graphql``; the ``mods`` query takes
+# a ``nameStemmed`` filter that gives stemmed/fuzzy matching against the
+# mod name. Verified live against the deck.
+_SEARCH_GQL = """
+query SearchMods($q: String!, $domain: String!, $count: Int!) {
+  mods(
+    filter: {
+      gameDomainName: { value: $domain, op: EQUALS }
+      nameStemmed: { value: $q, op: MATCHES }
+    }
+    sort: { downloads: { direction: DESC } }
+    count: $count
+  ) {
+    nodes {
+      modId
+      name
+      uploader { name }
+      downloads
+      endorsements
+      pictureUrl
+      adultContent
+    }
+  }
+}
+"""
 
 
 def _build_ssl_context() -> ssl.SSLContext:
@@ -248,30 +276,45 @@ class NexusClient:
     # ---- search (no API key required) ----------------------------------
 
     async def search(self, domain: str, query: str, *, api_key: str | None = None) -> list[NexusSearchHit]:
-        game_id = await self._domain_to_numeric_id(domain, api_key)
-        if game_id is None:
-            raise NexusError(
-                f"can't resolve numeric game id for '{domain}' "
-                "(set your Nexus API key in Settings to unlock the full games list)"
+        # GraphQL v2 — see _SEARCH_GQL comment for why we left the legacy
+        # search.nexusmods.com endpoint behind. ``api_key`` not required:
+        # the mods query is publicly readable.
+        body = json.dumps({
+            "query": _SEARCH_GQL,
+            "variables": {"q": query, "domain": domain, "count": 20},
+        }).encode("utf-8")
+
+        def _post() -> dict:
+            req = urllib.request.Request(
+                V2_GRAPHQL_URL,
+                data=body,
+                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
             )
-        params = {"terms": query, "game_id": str(game_id), "include_adult": "true", "page_size": "20"}
-        url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
-        data = await asyncio.to_thread(_request_json, url)
-        results = data.get("results") if isinstance(data, dict) else None
-        if not isinstance(results, list):
-            return []
+            try:
+                with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=20) as resp:
+                    return json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace")[:300]
+                raise NexusError(f"HTTP {e.code} from Nexus GraphQL: {err_body}") from e
+            except urllib.error.URLError as e:
+                raise NexusError(f"network error reaching Nexus GraphQL: {e.reason}") from e
+
+        data = await asyncio.to_thread(_post)
+        if data.get("errors"):
+            raise NexusError(f"GraphQL error: {data['errors'][0].get('message', data['errors'])}")
+        nodes = (((data.get("data") or {}).get("mods") or {}).get("nodes")) or []
         out: list[NexusSearchHit] = []
-        for r in results:
+        for r in nodes:
             try:
                 out.append(NexusSearchHit(
-                    mod_id=int(r.get("mod_id") or r.get("id")),
+                    mod_id=int(r["modId"]),
                     name=str(r.get("name") or ""),
-                    author=str(r.get("username") or r.get("author") or ""),
+                    author=str(((r.get("uploader") or {}).get("name")) or ""),
                     downloads=int(r.get("downloads") or 0),
                     endorsements=int(r.get("endorsements") or 0),
-                    image=r.get("image"),
+                    image=r.get("pictureUrl"),
                 ))
-            except (TypeError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 continue
         return out
 
