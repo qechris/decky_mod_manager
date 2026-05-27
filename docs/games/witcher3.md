@@ -88,15 +88,9 @@ or the other, not both.
 
 ## Common pitfalls
 
-- **First mod after a clean install**: `mods.settings` doesn't exist
-  until W3 has launched once. The plugin will create it, but the game
-  needs the Proton prefix to exist — launch W3 from Steam at least once
-  before installing mods.
-- **Mods installed by older plugin versions**: pre-0.1 had a layout
-  bug that produced `Mods/modFoo/content/content/...` (doubled
-  `content/`). Uninstall + reinstall through the plugin to fix.
-- **Mods that ship a `mod.json` or `modinfo.xml`**: not used by W3.
-  Some mod packs include these for other tools; we ignore them.
+- **First mod after a clean install**: `mods.settings` lives in the
+  Proton prefix, which doesn't exist until W3 has launched once via
+  Steam. Launch the game, exit, then install your first mod.
 
 ## See also
 

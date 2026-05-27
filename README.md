@@ -60,7 +60,7 @@ Want first-class support for another game? [Open a feature request](https://gith
 ```
 ~/.local/share/decky-mod-manager/
 ├── state.json                       # installed mods, enabled state, file lists
-├── settings.json                    # Nexus API key (file-mode 0600 recommended)
+├── settings.json                    # Nexus API key
 ├── library/<game_id>/<mod_id>/      # extracted mod payloads
 ├── backups/<game_id>/<mod_id>/      # vanilla files displaced by a mod
 └── baselines/<game_id>/<rel>        # snapshot before settings-merger writes
@@ -71,16 +71,12 @@ the game install. Toggling is just unlinking and re-linking.
 
 ## License
 
-[BSD 3-Clause](LICENSE) — short, permissive, and matches the BSD-3 of
-[`apocalyptech/w3scriptmerge`](https://github.com/apocalyptech/w3scriptmerge),
-which inspired the native script merger.
+[BSD 3-Clause](LICENSE).
 
-## Credits & prior art
+## Prior art
 
-- [Decky Loader](https://decky.xyz) team — the runtime that makes this plugin possible.
 - [`apocalyptech/w3scriptmerge`](https://github.com/apocalyptech/w3scriptmerge)
-  for the `diff3`-based script merging approach.
+  — the `diff3`-based approach our native W3 script merger uses.
 - [sinitar's Witcher 3 Modding Guide](https://www.sinitargaming.com/tw3.html)
   and [Nexus Modding Guide for KCD](https://wiki.nexusmods.com/index.php/Modding_guide_for_KCD)
-  for documenting the conventions our handlers implement.
-- Every Nexus mod author whose work this plugin makes a tiny bit easier to install.
+  — authoritative references for the conventions our handlers implement.

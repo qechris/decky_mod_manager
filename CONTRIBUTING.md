@@ -105,19 +105,6 @@ pnpm run build
 
 ## Bug reports
 
-[Bug template](.github/ISSUE_TEMPLATE/bug.yml) — the more concrete, the
-better. The most useful info we can get is:
-
-- Decky Loader version (Settings → General)
-- Mod Manager version (`plugin.json` `"version"`)
-- The exact mod (Nexus URL if applicable) and the error from the QAM
-- Backend log: `ssh deck@steamdeck.local 'journalctl -u plugin_loader --no-pager --since "5 minutes ago" | grep -i mod_manager'`
-
-## Releasing (maintainer)
-
-1. Bump `plugin.json` `"version"` and `package.json` `"version"`.
-2. Tag and push: `git tag v0.x.y && git push origin v0.x.y`.
-3. Build the release artifact: `pnpm run build && tar -czf "Mod-Manager-v0.x.y.tar.gz" --exclude=node_modules --exclude=tests --exclude=src ./Mod\ Manager/`.
-4. Create a GitHub Release attaching the tarball.
-
-(There's no CI publish step yet — manual until we set it up.)
+Use the [bug template](.github/ISSUE_TEMPLATE/bug.yml) — it asks for
+the journalctl excerpt, which is the most useful single piece of info
+in 9 out of 10 reports.
