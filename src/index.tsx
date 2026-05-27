@@ -353,6 +353,11 @@ function NexusTab({ game, onChange }: { game: Game; onChange: () => void }) {
     [game.id, submitted],
   );
 
+  const submit = useCallback(() => {
+    const trimmed = query.trim();
+    if (trimmed) setSubmitted(trimmed);
+  }, [query]);
+
   const openHit = (hit: NexusSearchHit) => {
     showModal(
       <NexusInstallModal game={game} hit={hit} onInstalled={() => { reload(); onChange(); }} />,
@@ -366,11 +371,26 @@ function NexusTab({ game, onChange }: { game: Game; onChange: () => void }) {
           label="Search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          // On-screen keyboard "Enter" should fire the search the same way the
+          // Search button does — otherwise Deck users have to D-pad away from
+          // the input to the Search button on every query.
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          // Built-in clear-X button so users don't backspace 20 characters.
+          bShowClearAction
         />
       </PanelSectionRow>
       <PanelSectionRow>
-        <ButtonItem layout="below" onClick={() => setSubmitted(query.trim())} disabled={!query.trim()}>
-          <FaDownload style={{ marginRight: 6 }} /> Search
+        {/* Keep `disabled` derived from `loading` only, NOT from `!query.trim()` —
+            otherwise the button re-renders on every keystroke, which under Steam
+            CEF causes the QAM focus to jitter ("glitchy" feel). We handle the
+            empty-query case in `submit()` instead. */}
+        <ButtonItem layout="below" onClick={submit} disabled={loading}>
+          <FaDownload style={{ marginRight: 6 }} /> {loading ? "Searching..." : "Search"}
         </ButtonItem>
       </PanelSectionRow>
       {loading && <PanelSectionRow><Loading label="Searching Nexus..." /></PanelSectionRow>}
