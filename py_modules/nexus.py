@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -32,6 +34,53 @@ USER_AGENT = "decky-mod-manager/0.1 (+https://github.com/local)"
 SEARCH_URL = "https://search.nexusmods.com/mods"
 V1_BASE = "https://api.nexusmods.com/v1"
 GAMES_INDEX_URL = f"{V1_BASE}/games.json"
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """Build an SSLContext that can actually verify Nexus's certificate.
+
+    Decky's bundled Python (PyInstaller-frozen loader) doesn't pick up the
+    system CA bundle through ``ssl.create_default_context()`` — the default
+    context comes up with an empty CA store, so every HTTPS request fails
+    with ``CERTIFICATE_VERIFY_FAILED``. We hit this in production on the
+    Deck: Nexus search silently rendered "No results." because the frontend
+    swallowed the exception.
+
+    Lookup order:
+    1. ``SSL_CERT_FILE`` env var (user override)
+    2. Common Linux distro paths — SteamOS uses
+       ``/etc/ssl/certs/ca-certificates.crt`` (symlink into
+       ``/etc/ca-certificates/extracted/tls-ca-bundle.pem``)
+    3. ``certifi`` if installed
+    4. Default context (will fail in Decky's sandbox, but at least the
+       error message will be informative)
+    """
+    ctx = ssl.create_default_context()
+    cafile = os.environ.get("SSL_CERT_FILE")
+    if not cafile or not os.path.exists(cafile):
+        for candidate in (
+            "/etc/ssl/certs/ca-certificates.crt",  # SteamOS, Debian, Ubuntu, Arch
+            "/etc/pki/tls/certs/ca-bundle.crt",     # RHEL, Fedora, CentOS
+            "/etc/ssl/cert.pem",                    # macOS, Alpine, *BSD
+            "/etc/ca-certificates/extracted/tls-ca-bundle.pem",  # SteamOS direct
+        ):
+            if os.path.exists(candidate):
+                cafile = candidate
+                break
+        else:
+            cafile = None
+    if cafile:
+        ctx.load_verify_locations(cafile=cafile)
+        return ctx
+    try:
+        import certifi  # type: ignore
+        ctx.load_verify_locations(cafile=certifi.where())
+    except ImportError:
+        pass
+    return ctx
+
+
+_SSL_CONTEXT = _build_ssl_context()
 
 
 # Appid → Nexus domain. Seeded with the ones we explicitly support; extended
@@ -106,7 +155,7 @@ def _request(
 ) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=timeout) as resp:
             return resp.read()
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")[:300]
@@ -297,7 +346,7 @@ class NexusClient:
         def _do() -> Path:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             dest.parent.mkdir(parents=True, exist_ok=True)
-            with urllib.request.urlopen(req, timeout=120) as resp, dest.open("wb") as fh:
+            with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=120) as resp, dest.open("wb") as fh:
                 while True:
                     chunk = resp.read(64 * 1024)
                     if not chunk:

@@ -374,8 +374,23 @@ function NexusTab({ game, onChange }: { game: Game; onChange: () => void }) {
         </ButtonItem>
       </PanelSectionRow>
       {loading && <PanelSectionRow><Loading label="Searching Nexus..." /></PanelSectionRow>}
-      {error && <PanelSectionRow><div style={{ color: "#ff6b6b" }}>{error}</div></PanelSectionRow>}
-      {!loading && submitted && hits && hits.length === 0 && (
+      {error && (
+        <PanelSectionRow>
+          <div
+            style={{
+              color: "#ff6b6b",
+              fontSize: 14,
+              padding: 8,
+              border: "1px solid #ff6b6b40",
+              borderRadius: 4,
+              wordBreak: "break-word",
+            }}
+          >
+            <b>Search failed:</b> {error}
+          </div>
+        </PanelSectionRow>
+      )}
+      {!loading && !error && submitted && hits && hits.length === 0 && (
         <PanelSectionRow><div style={{ opacity: 0.7 }}>No results.</div></PanelSectionRow>
       )}
       {hits?.map((hit) => (
