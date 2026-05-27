@@ -175,6 +175,20 @@ class NexusModFile:
 # ----------------------------------------------------------------- transport
 
 
+def _percent_encode_path(url: str) -> str:
+    """Re-encode a URL's path so it's safe for ``urllib.request.urlopen``.
+
+    Nexus's CDN returns links whose filename contains raw spaces. Python's
+    urllib refuses these with ``URL can't contain control characters``.
+    We split, ``quote`` just the path (preserving ``/``), and reassemble.
+    Already-encoded components survive because ``quote`` leaves ``%`` alone
+    when its ``safe`` set includes ``%``.
+    """
+    parts = urllib.parse.urlsplit(url)
+    safe_path = urllib.parse.quote(parts.path, safe="/%")
+    return urllib.parse.urlunsplit(parts._replace(path=safe_path))
+
+
 def _request(
     url: str,
     *,
@@ -386,8 +400,17 @@ class NexusClient:
     # ---- raw file download ---------------------------------------------
 
     async def download_to(self, url: str, dest: Path) -> Path:
+        # Nexus's CDN returns URLs with raw spaces in the filename portion
+        # (e.g. ``/cdn/.../AutoLoot All-in-One NG Update_…zip?…``). Python's
+        # urllib rejects URLs containing ANY characters it considers control
+        # chars (incl. space) with "URL can't contain control characters".
+        # Re-encode the path so the request goes through unmangled; the
+        # CDN expects %20 for spaces, which is the same byte sequence on
+        # the wire as what most other HTTP clients would auto-escape.
+        safe_url = _percent_encode_path(url)
+
         def _do() -> Path:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            req = urllib.request.Request(safe_url, headers={"User-Agent": USER_AGENT})
             dest.parent.mkdir(parents=True, exist_ok=True)
             with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=120) as resp, dest.open("wb") as fh:
                 while True:
