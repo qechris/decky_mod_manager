@@ -1,0 +1,53 @@
+# Jekyll config for the Mod Manager docs site.
+# Served via GitHub Pages from /docs on main.
+#
+# To preview locally:
+#   cd docs/
+#   bundle install
+#   bundle exec jekyll serve --livereload
+# Then open http://localhost:4000/
+
+title: Mod Manager for Steam Deck
+description: >-
+  Decky Loader plugin for browsing, installing, toggling, and merging
+  game mods directly from Game Mode.
+url: "https://qa-chrisb.github.io"
+baseurl: "/decky_mod_manager"
+
+# just-the-docs is a sidebar-nav technical-docs theme, free on GH Pages.
+remote_theme: just-the-docs/just-the-docs
+color_scheme: dark
+
+# Sidebar navigation order (lower aux_links sort first).
+aux_links:
+  "GitHub":
+    - "https://github.com/qa-chrisb/decky_mod_manager"
+
+# Search across pages.
+search_enabled: true
+search:
+  heading_level: 2
+  previews: 2
+  preview_words_before: 3
+  preview_words_after: 3
+  tokenizer_separator: /[\s\-/]+/
+  rel_url: true
+
+# Per-page footer with edit link.
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: "https://github.com/qa-chrisb/decky_mod_manager"
+gh_edit_branch: "main"
+gh_edit_source: docs
+gh_edit_view_mode: "tree"
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+
+# Keep these out of the rendered site.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
+  - .jekyll-cache/

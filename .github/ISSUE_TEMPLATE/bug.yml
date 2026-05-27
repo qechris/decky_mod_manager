@@ -1,0 +1,87 @@
+name: Bug report
+description: Something's broken on a real Steam Deck — let's fix it.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+        The more concrete the report, the faster we can fix it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what actually happened.
+      placeholder: |
+        I tried to install "Indestructible Items" for The Witcher 3 from
+        Browse Nexus, picked the MAIN file, tapped Install — got "Search
+        failed: ..." in the UI.
+    validations:
+      required: true
+
+  - type: input
+    id: decky-version
+    attributes:
+      label: Decky Loader version
+      description: Decky settings → General → Decky Version
+      placeholder: v3.2.3
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Mod Manager version
+      description: From the plugin's plugin.json, or the Decky settings → Plugins list
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: game
+    attributes:
+      label: Game (with appid)
+      description: e.g. "The Witcher 3: Wild Hunt (292030)"
+      placeholder: The Witcher 3: Wild Hunt (292030)
+
+  - type: input
+    id: mod
+    attributes:
+      label: Mod (Nexus URL if applicable)
+      placeholder: https://www.nexusmods.com/witcher3/mods/123
+
+  - type: textarea
+    id: backend-log
+    attributes:
+      label: Backend log
+      description: |
+        From a terminal (Konsole or SSH):
+        ```
+        journalctl -u plugin_loader --no-pager --since "5 minutes ago" | grep -i mod
+        ```
+        Paste the most recent ~30 lines mentioning mod_manager.
+      render: shell
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open QAM → Mod Manager
+        2. Pick "The Witcher 3: Wild Hunt"
+        3. Browse Nexus → search "indestructible"
+        4. Tap the first result → Install
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirms
+    attributes:
+      label: Checks
+      options:
+        - label: I'm on a real Steam Deck (or SteamOS via Bazzite/HoloISO), not generic Linux
+          required: true
+        - label: I searched [existing issues](https://github.com/qa-chrisb/decky_mod_manager/issues?q=is%3Aissue) for the same bug
+          required: true

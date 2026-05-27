@@ -1,0 +1,20 @@
+# Copy to scripts/.deploy-env and fill in. The .deploy-env file is gitignored.
+
+# SSH target — `user@host`. On Linux dev machines, `deck@steamdeck.local`
+# works once you've enabled SSH in Desktop mode (passwd && systemctl enable
+# --now sshd). Otherwise use the IP shown in the Deck's network settings.
+DECK_HOST=deck@steamdeck.local
+
+# Optional. Default 22.
+DECK_SSH_PORT=22
+
+# Where the plugin files ACTUALLY live on the Deck (deck-owned, where we
+# rsync to). The default keeps your dev workspace out of ~/homebrew/ so
+# Decky's auto-chown-on-load can't reclaim it.
+DECK_PLUGIN_DIR=/home/deck/decky-plugins/mod_manager
+
+# Where Decky LOOKS for the plugin. This is a deck-owned symlink in the
+# root-owned ~/homebrew/plugins/ dir, pointing at DECK_PLUGIN_DIR.
+# Created by scripts/setup-deck.sh; canonical layout that Decky's loader
+# expects to find via listdir().
+DECK_PLUGIN_LINK=/home/deck/homebrew/plugins/mod_manager

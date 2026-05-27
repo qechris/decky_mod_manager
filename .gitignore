@@ -8,3 +8,17 @@ __pycache__/
 .idea/
 .claude-debug/
 
+# Deploy script local config (contains SSH targets / per-deck paths).
+# Tracked: scripts/.deploy-env.example
+scripts/.deploy-env
+
+# Generated Decky CLI binary (downloaded by scripts/, not source-controlled)
+cli/decky
+
+# Build / packaging output
+out/
+
+# Jekyll build output for the docs site
+docs/_site/
+docs/.jekyll-cache/
+docs/Gemfile.lock

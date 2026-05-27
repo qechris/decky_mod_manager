@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Start with the user pain, not the proposed implementation.
+      placeholder: |
+        When I install three Witcher 3 mods that all ship `input.xml`,
+        only the last one's keybinds work — the others get silently lost.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution (optional)
+      description: How you think it could work. Skip if you'd rather see what we come up with.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Are you already working around this somehow? Did you look at other Decky plugins / desktop tools?
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - "Affects one specific game (W3 / KCD / ...)"
+        - "Cross-cutting (applies to all games)"
+        - "Dev tooling / build / docs"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: input
+    id: game
+    attributes:
+      label: Game (if applicable)
+      placeholder: The Witcher 3: Wild Hunt (292030)
