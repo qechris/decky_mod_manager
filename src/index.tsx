@@ -10,7 +10,7 @@ import {
 } from "@decky/ui";
 import { definePlugin } from "@decky/api";
 import { Component, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { FaPuzzlePiece, FaSync, FaTrash, FaPlus, FaCog, FaDownload, FaArrowLeft, FaTools } from "react-icons/fa";
+import { FaPuzzlePiece, FaSync, FaTrash, FaPlus, FaTools, FaSearch } from "react-icons/fa";
 import {
   disableMod,
   enableMod,
@@ -57,7 +57,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { err: Error | nu
       return (
         <PanelSection title="Mod Manager — error">
           <PanelSectionRow>
-            <div style={{ color: "#ff6b6b", fontFamily: "monospace", fontSize: 12, whiteSpace: "pre-wrap" }}>
+            <div style={{ color: "#ff6b6b", fontFamily: "monospace", fontSize: 14, whiteSpace: "pre-wrap" }}>
               {String(this.state.err?.message ?? this.state.err)}
             </div>
           </PanelSectionRow>
@@ -74,7 +74,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { err: Error | nu
 }
 
 function Loading({ label = "Loading..." }: { label?: string }) {
-  return <div style={{ opacity: 0.7, padding: "4px 0" }}>{label}</div>;
+  return <div style={{ opacity: 0.85, fontSize: 14, padding: "4px 0" }}>{label}</div>;
 }
 
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
@@ -141,15 +141,19 @@ function InstallLocalModal({
         <TextField
           label="Archive path"
           description="Absolute path to a .zip, .7z, .rar, or .tar.* mod archive"
+          {...({ placeholder: "/home/deck/Downloads/mod.zip" } as any)}
+          bShowClearAction
           value={path}
           onChange={(e) => setPath(e.target.value)}
         />
         <TextField
           label="Display name (optional)"
+          {...({ placeholder: "Defaults to the archive filename" } as any)}
+          bShowClearAction
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        {err && <div style={{ color: "#ff6b6b" }}>{err}</div>}
+        {err && <div style={{ color: "#ff6b6b", fontSize: 14 }}>{err}</div>}
       </div>
     </ConfirmModal>
   );
@@ -208,11 +212,11 @@ function NexusInstallModal({
       onCancel={closeModal}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ fontSize: 12, opacity: 0.7 }}>
+        <div style={{ fontSize: 14, opacity: 0.85 }}>
           by {hit.author} · {hit.downloads.toLocaleString()} downloads · {hit.endorsements.toLocaleString()} endorsements
         </div>
         {loading && <Loading label="Loading file list..." />}
-        {error && <div style={{ color: "#ff6b6b" }}>{error}</div>}
+        {error && <div style={{ color: "#ff6b6b", fontSize: 14 }}>{error}</div>}
         {files?.map((f) => (
           <Focusable
             key={f.file_id}
@@ -223,18 +227,19 @@ function NexusInstallModal({
               borderColor: selected?.file_id === f.file_id ? "#67c4ff" : "#444",
               borderRadius: 4,
               cursor: "pointer",
-              outline: "none",
+              // Keep Decky's default focus outline so controller users can
+              // see which file is selected without relying on the border alone.
             }}
           >
-            <div>{f.name}</div>
-            <div style={{ fontSize: 12, opacity: 0.7 }}>
+            <div style={{ fontSize: 14 }}>{f.name}</div>
+            <div style={{ fontSize: 13, opacity: 0.85 }}>
               {f.category} · v{f.version || "?"} · {(f.size_kb / 1024).toFixed(1)} MB
               {f.is_primary && " · MAIN"}
             </div>
           </Focusable>
         ))}
-        {err && <div style={{ color: "#ff6b6b" }}>{err}</div>}
-        <div style={{ fontSize: 11, opacity: 0.6, marginTop: 6 }}>
+        {err && <div style={{ color: "#ff6b6b", fontSize: 14 }}>{err}</div>}
+        <div style={{ fontSize: 13, opacity: 0.85, marginTop: 6 }}>
           Free Nexus accounts: if download fails with a "key required" error,
           you need to click an NXM:// link from the mod's page in a browser.
           Premium accounts can download directly.
@@ -269,10 +274,13 @@ function LocalModsTab({ game, onChange }: { game: Game; onChange: () => void }) 
         </ButtonItem>
       </PanelSectionRow>
       {loading && <PanelSectionRow><Loading /></PanelSectionRow>}
-      {error && <PanelSectionRow><div style={{ color: "#ff6b6b" }}>{error}</div></PanelSectionRow>}
+      {error && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 14 }}>{error}</div></PanelSectionRow>}
       {!loading && mods && mods.length === 0 && (
         <PanelSectionRow>
-          <div style={{ opacity: 0.7 }}>No mods installed yet.</div>
+          <div style={{ fontSize: 14, opacity: 0.85 }}>
+            No mods installed yet. Try the <b>Nexus</b> tab to browse, or
+            <b> Install from file</b> if you've already downloaded an archive.
+          </div>
         </PanelSectionRow>
       )}
       {mods?.map((mod) => (
@@ -390,7 +398,7 @@ function NexusTab({ game, onChange }: { game: Game; onChange: () => void }) {
             CEF causes the QAM focus to jitter ("glitchy" feel). We handle the
             empty-query case in `submit()` instead. */}
         <ButtonItem layout="below" onClick={submit} disabled={loading}>
-          <FaDownload style={{ marginRight: 6 }} /> {loading ? "Searching..." : "Search"}
+          <FaSearch style={{ marginRight: 6 }} /> {loading ? "Searching..." : "Search"}
         </ButtonItem>
       </PanelSectionRow>
       {loading && <PanelSectionRow><Loading label="Searching Nexus..." /></PanelSectionRow>}
@@ -411,14 +419,18 @@ function NexusTab({ game, onChange }: { game: Game; onChange: () => void }) {
         </PanelSectionRow>
       )}
       {!loading && !error && submitted && hits && hits.length === 0 && (
-        <PanelSectionRow><div style={{ opacity: 0.7 }}>No results.</div></PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 14, opacity: 0.85 }}>
+            No mods matched "<b>{submitted}</b>" — try a broader search term.
+          </div>
+        </PanelSectionRow>
       )}
       {hits?.map((hit) => (
         <PanelSectionRow key={hit.mod_id}>
           <ButtonItem layout="below" onClick={() => openHit(hit)}>
             <div style={{ textAlign: "left" }}>
-              <div>{hit.name}</div>
-              <div style={{ fontSize: 11, opacity: 0.6 }}>
+              <div style={{ fontSize: 14 }}>{hit.name}</div>
+              <div style={{ fontSize: 13, opacity: 0.85 }}>
                 {hit.author} · ↓{hit.downloads.toLocaleString()} · ♥{hit.endorsements.toLocaleString()}
               </div>
             </div>
@@ -517,15 +529,13 @@ function W3ToolsTab({ game }: { game: Game }) {
 
   return (
     <>
-      <PanelSection title="Witcher 3 — Script Merger (Proton GUI)">
+      <PanelSection title="Script Merger (Proton GUI)">
         {status && (
           <>
             <PanelSectionRow>
-              <div style={{ fontSize: 12 }}>
+              <div style={{ fontSize: 14 }}>
                 <div>Installed: {status.installed ? "yes" : "no"}</div>
-                {status.exe_path && <div style={{ opacity: 0.7, wordBreak: "break-all" }}>at {status.exe_path}</div>}
                 <div>Proton: {status.proton_path ? "found" : "not found"}</div>
-                {status.proton_path && <div style={{ opacity: 0.7, wordBreak: "break-all" }}>at {status.proton_path}</div>}
               </div>
             </PanelSectionRow>
             {!status.installed && (
@@ -549,10 +559,10 @@ function W3ToolsTab({ game }: { game: Game }) {
             <FaSync style={{ marginRight: 6 }} /> Re-check
           </ButtonItem>
         </PanelSectionRow>
-        {err && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 12 }}>{err}</div></PanelSectionRow>}
+        {err && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 14 }}>{err}</div></PanelSectionRow>}
       </PanelSection>
 
-      <PanelSection title="Witcher 3 — Native Mergers (Linux)">
+      <PanelSection title="Native Mergers (Linux)">
         <PanelSectionRow>
           <div style={{ fontSize: 14, opacity: 0.85 }}>
             Merges conflicting files from enabled mods using GNU diff3. Conflicts auto-resolve
@@ -607,9 +617,41 @@ function W3ToolsTab({ game }: { game: Game }) {
         )}
       </PanelSection>
 
-      <PanelSection title="Witcher 3 — Diagnostics">
+      <PanelSection title="Diagnostics">
         <PanelSectionRow>
           <div style={{ fontSize: 14 }}>
+            Install path
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>
+            {game.install_path}
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 14, marginTop: 6 }}>
+            Script Merger (Proton GUI) path
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>
+            {status?.exe_path || "not installed"}
+          </div>
+        </PanelSectionRow>
+        {status?.proton_path && (
+          <>
+            <PanelSectionRow>
+              <div style={{ fontSize: 14, marginTop: 6 }}>Proton path</div>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>
+                {status.proton_path}
+              </div>
+            </PanelSectionRow>
+          </>
+        )}
+        <PanelSectionRow>
+          <div style={{ fontSize: 14, marginTop: 6 }}>
             mods.settings →{" "}
             {settingsPath ? (
               <span style={{ color: settingsPath.exists ? "#8aff8a" : "#ffb86c" }}>
@@ -623,12 +665,12 @@ function W3ToolsTab({ game }: { game: Game }) {
         {settingsPath && (
           <>
             <PanelSectionRow>
-              <div style={{ fontSize: 13, opacity: 0.7, wordBreak: "break-all" }}>
+              <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>
                 {settingsPath.path}
               </div>
             </PanelSectionRow>
             <PanelSectionRow>
-              <div style={{ fontSize: 13, opacity: 0.6 }}>
+              <div style={{ fontSize: 13, opacity: 0.85 }}>
                 {settingsPath.using_prefix_documents
                   ? "Using Proton prefix Documents (the game reads this)."
                   : "Fallback: install Mods/ — the game probably won't read this."}
@@ -670,12 +712,12 @@ function MergerResultRows({
       )}
       {conflicts.slice(0, 6).map((f) => (
         <PanelSectionRow key={f}>
-          <div style={{ fontSize: 13, opacity: 0.8, wordBreak: "break-all" }}>{f}</div>
+          <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>{f}</div>
         </PanelSectionRow>
       ))}
       {conflicts.length > 6 && (
         <PanelSectionRow>
-          <div style={{ fontSize: 13, opacity: 0.6 }}>
+          <div style={{ fontSize: 13, opacity: 0.85 }}>
             …and {conflicts.length - 6} more.
           </div>
         </PanelSectionRow>
@@ -712,24 +754,17 @@ function GameDetail({
     <ErrorBoundary>
       <PanelSection title={game.name}>
         <PanelSectionRow>
-          <div style={{ fontSize: 11, opacity: 0.6, wordBreak: "break-all" }}>
-            {game.install_path} · handler: {handler.name}
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            <TabPill label="Installed" active={tab === "local"} onClick={() => setTab("local")} />
-            <TabPill label="Browse Nexus" active={tab === "nexus"} onClick={() => setTab("nexus")} />
+            <TabPill label="Mods" active={tab === "local"} onClick={() => setTab("local")} />
+            <TabPill label="Nexus" active={tab === "nexus"} onClick={() => setTab("nexus")} />
             {showTools && (
               <TabPill label="Tools" active={tab === "tools"} onClick={() => setTab("tools")} />
             )}
           </div>
         </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={onBack}>
-            <FaArrowLeft style={{ marginRight: 6 }} /> Back to games
-          </ButtonItem>
-        </PanelSectionRow>
+        {/* No "Back to games" button — the header's back arrow handles that.
+            No install_path / handler info either — both live in the Tools →
+            Diagnostics panel where they belong. */}
       </PanelSection>
 
       {tab === "local" && <LocalModsTab key={bump} game={game} onChange={() => setBump((b) => b + 1)} />}
@@ -748,13 +783,14 @@ function TabPill({ label, active, onClick }: { label: string; active: boolean; o
       onActivate={onClick}
       focusWithinClassName="gpfocuswithin"
       style={{
-        padding: "6px 12px",
-        borderRadius: 14,
+        padding: "8px 14px",
+        borderRadius: 16,
         background: active ? "#67c4ff" : "#2a2a2a",
         color: active ? "#000" : "#ddd",
         fontSize: 14,
         cursor: "pointer",
-        outline: "none",
+        // No `outline: none` — Decky's default focus ring is the only signal
+        // controller users have for "which pill am I about to activate".
       }}
     >
       {label}
@@ -778,7 +814,13 @@ function GamePicker({ onPick }: { onPick: (g: Game) => void }) {
   return (
     <PanelSection title="Games">
       <PanelSectionRow>
-        <TextField label="Filter" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <TextField
+          label="Filter"
+          {...({ placeholder: "Filter by name" } as any)}
+          bShowClearAction
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
       </PanelSectionRow>
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={reload}>
@@ -786,16 +828,27 @@ function GamePicker({ onPick }: { onPick: (g: Game) => void }) {
         </ButtonItem>
       </PanelSectionRow>
       {loading && <PanelSectionRow><Loading label="Scanning Steam library..." /></PanelSectionRow>}
-      {error && <PanelSectionRow><div style={{ color: "#ff6b6b" }}>{error}</div></PanelSectionRow>}
+      {error && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 14 }}>{error}</div></PanelSectionRow>}
       {!loading && filtered.length === 0 && (
         <PanelSectionRow>
-          <div style={{ opacity: 0.7 }}>No Steam games found.</div>
+          <div style={{ fontSize: 14, opacity: 0.85 }}>
+            {filter.trim()
+              ? <>No games matched "<b>{filter}</b>" — clear the filter or <b>Rescan</b>.</>
+              : <>No mod-able Steam games found. Tap <b>Rescan</b> to retry.</>}
+          </div>
         </PanelSectionRow>
       )}
       {filtered.map((g) => (
         <PanelSectionRow key={g.id}>
           <ButtonItem layout="below" onClick={() => onPick(g)}>
-            {g.name}
+            <div style={{ textAlign: "left" }}>
+              <div style={{ fontSize: 14 }}>{g.name}</div>
+              {g.mod_count > 0 && (
+                <div style={{ fontSize: 13, opacity: 0.85 }}>
+                  {g.enabled_mod_count}/{g.mod_count} mod{g.mod_count === 1 ? "" : "s"} enabled
+                </div>
+              )}
+            </div>
           </ButtonItem>
         </PanelSectionRow>
       ))}
@@ -829,11 +882,11 @@ function SettingsPanel() {
   return (
     <PanelSection title="Settings">
       {loading && <PanelSectionRow><Loading /></PanelSectionRow>}
-      {error && <PanelSectionRow><div style={{ color: "#ff6b6b" }}>{error}</div></PanelSectionRow>}
+      {error && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 14 }}>{error}</div></PanelSectionRow>}
       {data && (
         <>
           <PanelSectionRow>
-            <div style={{ fontSize: 12 }}>
+            <div style={{ fontSize: 14 }}>
               Nexus API key: {data.nexus_api_key_set ? data.nexus_api_key : "(not set)"}
             </div>
           </PanelSectionRow>
@@ -841,6 +894,9 @@ function SettingsPanel() {
             <TextField
               label="New API key"
               description="Get yours from nexusmods.com → My Account → API Access"
+              {...({ placeholder: "Paste your Nexus personal API key" } as any)}
+              bShowClearAction
+              bIsPassword
               value={key}
               onChange={(e) => setKey(e.target.value)}
             />
@@ -850,7 +906,7 @@ function SettingsPanel() {
               {busy ? "Saving..." : "Save key"}
             </ButtonItem>
           </PanelSectionRow>
-          {msg && <PanelSectionRow><div style={{ fontSize: 12, opacity: 0.8 }}>{msg}</div></PanelSectionRow>}
+          {msg && <PanelSectionRow><div style={{ fontSize: 14, opacity: 0.85 }}>{msg}</div></PanelSectionRow>}
         </>
       )}
     </PanelSection>

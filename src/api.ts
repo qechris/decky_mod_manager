@@ -4,6 +4,8 @@ export interface Game {
   id: string;
   name: string;
   install_path: string;
+  mod_count: number;
+  enabled_mod_count: number;
 }
 
 export interface Mod {

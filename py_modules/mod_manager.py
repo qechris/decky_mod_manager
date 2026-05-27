@@ -63,11 +63,46 @@ def _parse_appmanifest(text: str) -> dict[str, str] | None:
     }
 
 
+# Steam ships runtime/compat tools as appmanifests in steamapps/, so they show
+# up in our scan alongside actual games. Most users can't mod these and showing
+# them as 8-of-15 entries in the picker is just clutter. We exclude two ways:
+# (1) a small denylist of well-known Valve runtime appids, and (2) a
+# heuristic match on the install directory name (every Proton release and SLR
+# variant lives in a directory with one of these prefixes).
+_VALVE_RUNTIME_APPIDS = {
+    "228980",   # Steamworks Common Redistributables
+    "1070560",  # Steam Linux Runtime 1.0 (scout)
+    "1391110",  # Steam Linux Runtime 2.0 (soldier)
+    "1493710",  # Proton Experimental
+    "1628350",  # Steam Linux Runtime 3.0 (sniper)
+    "1826330",  # Proton EasyAntiCheat Runtime
+    "2180100",  # Proton Hotfix
+    "3658110",  # Proton 10.0
+    "4183110",  # Steam Linux Runtime 4.0
+    # Older Protons that may still be installed:
+    "858280", "961940", "1054830", "1113280", "1245040", "1420170", "1580130",
+}
+
+_RUNTIME_DIR_PREFIXES = (
+    "Proton ",
+    "SteamLinuxRuntime",
+    "Steamworks Shared",
+)
+
+
+def _is_valve_runtime(appid: str, installdir: str) -> bool:
+    if appid in _VALVE_RUNTIME_APPIDS:
+        return True
+    return any(installdir.startswith(p) for p in _RUNTIME_DIR_PREFIXES)
+
+
 @dataclass
 class Game:
     id: str           # appid as string
     name: str
     install_path: str
+    mod_count: int = 0
+    enabled_mod_count: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -172,13 +207,20 @@ class ModManager:
                 fields = _parse_appmanifest(text)
                 if fields is None:
                     continue
+                # Skip Valve runtimes/compat tools — users can't mod those and
+                # they're noise in the picker (8/15 of a typical Deck install).
+                if _is_valve_runtime(fields["appid"], fields["installdir"]):
+                    continue
                 install_path = apps_dir / "common" / fields["installdir"]
                 if not install_path.exists():
                     continue
+                mods = self._state.get(fields["appid"], {})
                 seen[fields["appid"]] = Game(
                     id=fields["appid"],
                     name=fields["name"],
                     install_path=str(install_path),
+                    mod_count=len(mods),
+                    enabled_mod_count=sum(1 for m in mods.values() if m.enabled),
                 )
 
         return sorted(seen.values(), key=lambda g: g.name.lower())
