@@ -124,11 +124,40 @@ class Plugin:
 
     async def script_merger_native(self, game_id: str) -> dict:
         """Native diff3-based .ws merger for Witcher 3 — no Proton needed."""
+        game, mods_payload = self._w3_merge_context(game_id)
+        return await self.manager.handler_for(game.id).run_tool(
+            "script_merger_native", game, mods=mods_payload,
+        )
+
+    async def settings_merger_native(self, game_id: str) -> dict:
+        """Native diff3-based input.xml / userConfigDef.xml merger."""
+        game, mods_payload = self._w3_merge_context(game_id)
+        return await self.manager.handler_for(game.id).run_tool(
+            "settings_merger_native",
+            game,
+            mods=mods_payload,
+            data_dir=str(self.manager.data_dir),
+        )
+
+    async def remove_merged(self, game_id: str) -> dict:
+        """Delete the merged-script mod and restore baseline settings files."""
+        game = self._get_game(game_id)
+        return await self.manager.handler_for(game.id).run_tool(
+            "remove_merged", game, data_dir=str(self.manager.data_dir),
+        )
+
+    async def mods_settings_path(self, game_id: str) -> dict:
+        """Report the resolved on-disk mods.settings path so users can debug."""
+        game = self._get_game(game_id)
+        return await self.manager.handler_for(game.id).run_tool(
+            "mods_settings_path", game,
+        )
+
+    def _w3_merge_context(self, game_id: str):
+        """Build the (game, mods_payload) tuple both merger RPCs need."""
+        from pathlib import Path
         game = self._get_game(game_id)
         enabled = [m for m in self.manager.list_mods(game.id) if m.enabled]
-        # The handler needs each mod's on-disk folder name. We derive it from
-        # the relative paths recorded at enable time.
-        from pathlib import Path
         mods_payload = []
         for m in enabled:
             folders = {
@@ -138,9 +167,7 @@ class Plugin:
             }
             for folder in folders:
                 mods_payload.append({"id": m.id, "folder": folder, "name": m.name})
-        return await self.manager.handler_for(game.id).run_tool(
-            "script_merger_native", game, mods=mods_payload,
-        )
+        return game, mods_payload
 
     # ----------------------------- helpers -------------------------------
 

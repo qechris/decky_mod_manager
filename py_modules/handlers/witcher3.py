@@ -252,23 +252,76 @@ class Witcher3Handler(BaseHandler):
                 "label": "Script Merger (native Linux)",
                 "description": "Merge .ws scripts from enabled mods using GNU diff3 — no Proton required.",
             },
+            {
+                "id": "settings_merger_native",
+                "label": "Settings Merger (native Linux)",
+                "description": "Merge input.xml / userConfigDef.xml from enabled mods using GNU diff3.",
+            },
+            {
+                "id": "remove_merged",
+                "label": "Remove merged outputs",
+                "description": "Delete Mods/mod0000_DeckyMerged and restore baseline settings.",
+            },
+            {
+                "id": "mods_settings_path",
+                "label": "Show mods.settings path",
+                "description": "Show the resolved on-disk path the handler is writing to.",
+            },
         ]
 
     async def run_tool(self, tool_id: str, game: GameLike, **kwargs) -> dict:
+        install = Path(game.install_path)
         if tool_id == "script_merger_status":
             from tools.script_merger import script_merger_action
             return await script_merger_action(
                 kwargs.get("action", "status"),
-                Path(game.install_path),
+                install,
                 api_key=kwargs.get("api_key"),
             )
         if tool_id == "script_merger_native":
             from tools.script_merger_native import native_merge
             return await native_merge(
-                Path(game.install_path),
+                install,
                 mods=kwargs.get("mods", []),
-                mods_settings_path=_mods_settings_path(Path(game.install_path), game.id),
+                mods_settings_path=_mods_settings_path(install, game.id),
             )
+        if tool_id == "settings_merger_native":
+            from tools.settings_merger_native import native_settings_merge
+            data_dir = kwargs.get("data_dir")
+            if data_dir is None:
+                raise ValueError("settings_merger_native requires data_dir")
+            return await native_settings_merge(
+                install,
+                data_dir=Path(data_dir),
+                game_id=game.id,
+                mods=kwargs.get("mods", []),
+                mods_settings_path=_mods_settings_path(install, game.id),
+            )
+        if tool_id == "remove_merged":
+            from tools.settings_merger_native import restore_settings_baselines
+            data_dir = kwargs.get("data_dir")
+            removed_script = False
+            merged_dir = install / "Mods" / "mod0000_DeckyMerged"
+            if merged_dir.exists():
+                import shutil as _sh
+                _sh.rmtree(merged_dir)
+                removed_script = True
+            restored = {"restored": [], "cleared_baseline_dir": False}
+            if data_dir is not None:
+                restored = await restore_settings_baselines(
+                    install, data_dir=Path(data_dir), game_id=game.id,
+                )
+            return {
+                "removed_merged_script_mod": removed_script,
+                "restored_settings_files": restored["restored"],
+            }
+        if tool_id == "mods_settings_path":
+            p = _mods_settings_path(install, game.id)
+            return {
+                "path": str(p),
+                "exists": p.exists(),
+                "using_prefix_documents": _w3_documents_dir(install, game.id) is not None,
+            }
         return await super().run_tool(tool_id, game, **kwargs)
 
 

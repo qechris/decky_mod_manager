@@ -28,10 +28,16 @@ import {
   nexusModFiles,
   nexusSearch,
   NativeMergerResult,
+  ModsSettingsPathInfo,
+  modsSettingsPath,
+  removeMerged,
+  RemoveMergedResult,
   scriptMerger,
   scriptMergerNative,
   ScriptMergerStatus,
   setNexusApiKey,
+  SettingsMergerResult,
+  settingsMergerNative,
   SettingsView,
   uninstallMod,
 } from "./api";
@@ -393,6 +399,9 @@ function NexusTab({ game, onChange }: { game: Game; onChange: () => void }) {
 function W3ToolsTab({ game }: { game: Game }) {
   const [status, setStatus] = useState<ScriptMergerStatus | null>(null);
   const [native, setNative] = useState<NativeMergerResult | null>(null);
+  const [settings, setSettings] = useState<SettingsMergerResult | null>(null);
+  const [removed, setRemoved] = useState<RemoveMergedResult | null>(null);
+  const [settingsPath, setSettingsPath] = useState<ModsSettingsPathInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -400,7 +409,12 @@ function W3ToolsTab({ game }: { game: Game }) {
     setBusy(true);
     setErr(null);
     try {
-      setStatus(await scriptMerger(game.id, "status"));
+      const [s, p] = await Promise.all([
+        scriptMerger(game.id, "status"),
+        modsSettingsPath(game.id),
+      ]);
+      setStatus(s);
+      setSettingsPath(p);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -430,6 +444,35 @@ function W3ToolsTab({ game }: { game: Game }) {
     setNative(null);
     try {
       setNative(await scriptMergerNative(game.id));
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runSettings = async () => {
+    setBusy(true);
+    setErr(null);
+    setSettings(null);
+    try {
+      setSettings(await settingsMergerNative(game.id));
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doRemoveMerged = async () => {
+    setBusy(true);
+    setErr(null);
+    setRemoved(null);
+    try {
+      const r = await removeMerged(game.id);
+      setRemoved(r);
+      setNative(null);
+      setSettings(null);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -474,54 +517,141 @@ function W3ToolsTab({ game }: { game: Game }) {
         {err && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 12 }}>{err}</div></PanelSectionRow>}
       </PanelSection>
 
-      <PanelSection title="Witcher 3 — Native Merger (Linux)">
+      <PanelSection title="Witcher 3 — Native Mergers (Linux)">
         <PanelSectionRow>
           <div style={{ fontSize: 14, opacity: 0.85 }}>
-            Merges .ws scripts from enabled mods using GNU diff3. Conflicts auto-resolve to the
-            higher-priority mod (per mods.settings). Output goes to Mods/mod0000_DeckyMerged/.
+            Merges conflicting files from enabled mods using GNU diff3. Conflicts auto-resolve
+            to the higher-priority mod (per mods.settings).
           </div>
         </PanelSectionRow>
+
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={runNative} disabled={busy}>
-            <FaTools style={{ marginRight: 6 }} /> {busy ? "Merging..." : "Run native merger"}
+            <FaTools style={{ marginRight: 6 }} />
+            {busy ? "Working..." : "Merge scripts (.ws) → mod0000_DeckyMerged"}
           </ButtonItem>
         </PanelSectionRow>
-        {native && (
+        {native && <MergerResultRows
+          title="Scripts"
+          mergedCount={native.merged_files.length}
+          conflicts={native.conflicts_auto_resolved}
+          skipped={native.skipped_no_vanilla}
+          skippedLabel="no vanilla baseline"
+        />}
+
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={runSettings} disabled={busy}>
+            <FaTools style={{ marginRight: 6 }} />
+            {busy ? "Working..." : "Merge settings (input.xml, userConfigDef.xml)"}
+          </ButtonItem>
+        </PanelSectionRow>
+        {settings && <MergerResultRows
+          title="Settings"
+          mergedCount={settings.merged_files.length}
+          conflicts={settings.conflicts_auto_resolved}
+          skipped={settings.skipped_no_baseline}
+          skippedLabel="no baseline could be captured"
+        />}
+
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={doRemoveMerged} disabled={busy}>
+            <FaTrash style={{ marginRight: 6 }} />
+            {busy ? "Working..." : "Remove merged outputs (restore baselines)"}
+          </ButtonItem>
+        </PanelSectionRow>
+        {removed && (
+          <PanelSectionRow>
+            <div style={{ fontSize: 14 }}>
+              {removed.removed_merged_script_mod
+                ? "Removed mod0000_DeckyMerged."
+                : "No merged script mod to remove."}
+              {removed.restored_settings_files.length > 0 &&
+                ` Restored ${removed.restored_settings_files.length} settings file(s) from baseline.`}
+            </div>
+          </PanelSectionRow>
+        )}
+      </PanelSection>
+
+      <PanelSection title="Witcher 3 — Diagnostics">
+        <PanelSectionRow>
+          <div style={{ fontSize: 14 }}>
+            mods.settings →{" "}
+            {settingsPath ? (
+              <span style={{ color: settingsPath.exists ? "#8aff8a" : "#ffb86c" }}>
+                {settingsPath.exists ? "found" : "will be created"}
+              </span>
+            ) : (
+              "checking..."
+            )}
+          </div>
+        </PanelSectionRow>
+        {settingsPath && (
           <>
             <PanelSectionRow>
-              <div style={{ fontSize: 14 }}>
-                Merged <b>{native.merged_files.length}</b> file(s) into {native.merged_mod_name}.
+              <div style={{ fontSize: 13, opacity: 0.7, wordBreak: "break-all" }}>
+                {settingsPath.path}
               </div>
             </PanelSectionRow>
-            {native.conflicts_auto_resolved.length > 0 && (
-              <PanelSectionRow>
-                <div style={{ fontSize: 14, color: "#ffb86c" }}>
-                  Auto-resolved {native.conflicts_auto_resolved.length} conflict(s) — kept higher-priority side.
-                </div>
-              </PanelSectionRow>
-            )}
-            {native.conflicts_auto_resolved.slice(0, 8).map((f) => (
-              <PanelSectionRow key={f}>
-                <div style={{ fontSize: 13, opacity: 0.8, wordBreak: "break-all" }}>{f}</div>
-              </PanelSectionRow>
-            ))}
-            {native.conflicts_auto_resolved.length > 8 && (
-              <PanelSectionRow>
-                <div style={{ fontSize: 13, opacity: 0.6 }}>
-                  …and {native.conflicts_auto_resolved.length - 8} more.
-                </div>
-              </PanelSectionRow>
-            )}
-            {native.skipped_no_vanilla.length > 0 && (
-              <PanelSectionRow>
-                <div style={{ fontSize: 14, color: "#ff6b6b" }}>
-                  Skipped {native.skipped_no_vanilla.length} file(s) with no vanilla baseline.
-                </div>
-              </PanelSectionRow>
-            )}
+            <PanelSectionRow>
+              <div style={{ fontSize: 13, opacity: 0.6 }}>
+                {settingsPath.using_prefix_documents
+                  ? "Using Proton prefix Documents (the game reads this)."
+                  : "Fallback: install Mods/ — the game probably won't read this."}
+              </div>
+            </PanelSectionRow>
           </>
         )}
       </PanelSection>
+    </>
+  );
+}
+
+function MergerResultRows({
+  title,
+  mergedCount,
+  conflicts,
+  skipped,
+  skippedLabel,
+}: {
+  title: string;
+  mergedCount: number;
+  conflicts: string[];
+  skipped: string[];
+  skippedLabel: string;
+}) {
+  return (
+    <>
+      <PanelSectionRow>
+        <div style={{ fontSize: 14 }}>
+          {title}: merged <b>{mergedCount}</b> file(s).
+        </div>
+      </PanelSectionRow>
+      {conflicts.length > 0 && (
+        <PanelSectionRow>
+          <div style={{ fontSize: 14, color: "#ffb86c" }}>
+            Auto-resolved {conflicts.length} conflict(s) — kept higher-priority side.
+          </div>
+        </PanelSectionRow>
+      )}
+      {conflicts.slice(0, 6).map((f) => (
+        <PanelSectionRow key={f}>
+          <div style={{ fontSize: 13, opacity: 0.8, wordBreak: "break-all" }}>{f}</div>
+        </PanelSectionRow>
+      ))}
+      {conflicts.length > 6 && (
+        <PanelSectionRow>
+          <div style={{ fontSize: 13, opacity: 0.6 }}>
+            …and {conflicts.length - 6} more.
+          </div>
+        </PanelSectionRow>
+      )}
+      {skipped.length > 0 && (
+        <PanelSectionRow>
+          <div style={{ fontSize: 14, color: "#ff6b6b" }}>
+            Skipped {skipped.length} file(s) — {skippedLabel}.
+          </div>
+        </PanelSectionRow>
+      )}
     </>
   );
 }

@@ -60,6 +60,24 @@ export interface NativeMergerResult {
   output_dir: string;
 }
 
+export interface SettingsMergerResult {
+  merged_files: string[];
+  conflicts_auto_resolved: string[];
+  skipped_no_baseline: string[];
+  baselined: string[];
+}
+
+export interface RemoveMergedResult {
+  removed_merged_script_mod: boolean;
+  restored_settings_files: string[];
+}
+
+export interface ModsSettingsPathInfo {
+  path: string;
+  exists: boolean;
+  using_prefix_documents: boolean;
+}
+
 // -------- discovery --------
 export const listGames = callable<[], Game[]>("list_games");
 export const listMods = callable<[string], Mod[]>("list_mods");
@@ -91,3 +109,6 @@ export const scriptMerger =
     "script_merger",
   );
 export const scriptMergerNative = callable<[string], NativeMergerResult>("script_merger_native");
+export const settingsMergerNative = callable<[string], SettingsMergerResult>("settings_merger_native");
+export const removeMerged = callable<[string], RemoveMergedResult>("remove_merged");
+export const modsSettingsPath = callable<[string], ModsSettingsPathInfo>("mods_settings_path");
