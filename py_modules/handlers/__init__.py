@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from handlers.base import BaseHandler, EnableResult
 from handlers.generic import GenericHandler
+from handlers.kingdom_come import KCD2_APPID, KCD_APPID, KingdomComeHandler
 from handlers.witcher3 import WITCHER3_APPID, Witcher3Handler
 
 _REGISTRY: dict[str, type[BaseHandler]] = {
     WITCHER3_APPID: Witcher3Handler,
+    KCD_APPID: KingdomComeHandler,
+    KCD2_APPID: KingdomComeHandler,  # KCD2 uses the same Mods/ layout
 }
 
 
@@ -24,6 +27,9 @@ __all__ = [
     "BaseHandler",
     "EnableResult",
     "GenericHandler",
+    "KCD_APPID",
+    "KCD2_APPID",
+    "KingdomComeHandler",
     "Witcher3Handler",
     "WITCHER3_APPID",
     "get_handler",
