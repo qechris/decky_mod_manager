@@ -1,15 +1,23 @@
 """Witcher 3 handler.
 
-Witcher 3 mods follow a specific layout:
+Layout the game actually expects (see sinitar/CDPR REDkit modding guides):
 
-* Content mods extract to ``<install>/Mods/<modname>/content/...``
-* DLCs go to ``<install>/DLC/<dlcname>/...``
-* Load order / enabled state lives in ``<install>/Mods/mods.settings``
-  (a simple INI: one section per mod, with ``Enabled`` / ``Priority`` keys)
+* Content mods:         ``<install>/Mods/<modname>/content/...``
+* DLCs:                 ``<install>/DLC/<dlcname>/content/...``
+* Load order / enable:  ``<userdata>/Documents/The Witcher 3/mods.settings``
+                        (INI: section per mod, ``Enabled`` / ``Priority`` keys)
 
-If the mod archive already follows the W3 layout (top-level ``Mods/`` and/or
-``DLC/`` directories), we mirror it as-is. Otherwise we wrap the payload in
-``Mods/<modname>/content/`` to match the expected structure.
+Under Proton on Linux/Steam Deck, ``<userdata>`` lives inside the prefix:
+    <library>/steamapps/compatdata/292030/pfx/drive_c/users/steamuser/
+
+Important rules we enforce:
+- Mod folders inside ``Mods/`` MUST start with the literal prefix ``mod`` or
+  the engine ignores them. We rename if needed.
+- mods.settings must be in the prefix's Documents dir, NOT in the install root.
+  (Writing it under ``<install>/Mods/`` is a no-op — the game never reads it.)
+- The most common archive shape is ``modFooBar/content/scripts/...`` at the
+  archive root. We wrap that into ``Mods/modFooBar/`` WITHOUT duplicating the
+  ``content/`` segment.
 """
 
 from __future__ import annotations
@@ -23,7 +31,6 @@ from handlers.base import (
     EnableResult,
     GameLike,
     flatten_single_root,
-    iter_files,
     restore_tree,
     symlink_tree,
 )
@@ -31,8 +38,93 @@ from handlers.base import (
 WITCHER3_APPID = "292030"  # The Witcher 3: Wild Hunt on Steam
 
 
-def _looks_like_w3_layout(root: Path) -> bool:
-    return (root / "Mods").is_dir() or (root / "DLC").is_dir()
+# --------------------------------------------------------------- layout helpers
+
+
+def _real_entries(p: Path) -> list[Path]:
+    return [e for e in p.iterdir() if not e.name.startswith(".")]
+
+
+def _has_install_root_layout(p: Path) -> bool:
+    """The dir looks like a partial game install: a ``Mods/`` or ``DLC/`` at top."""
+    for name in ("Mods", "DLC", "mods", "dlc"):
+        if (p / name).is_dir():
+            return True
+    return False
+
+
+def _is_mod_folder(p: Path) -> bool:
+    """A directory that on its own represents one mod (has content/ inside)."""
+    return p.is_dir() and (p / "content").is_dir()
+
+
+def _is_dlc_folder(p: Path) -> bool:
+    return p.is_dir() and p.name.lower().startswith("dlc") and (p / "content").is_dir()
+
+
+# Meaningful W3 path segments we must NOT hoist away — they're load-bearing.
+_RESERVED_NAMES = {"content", "bin", "scripts", "dlc", "mods"}
+
+
+def _is_meaningful_segment(p: Path) -> bool:
+    """True if hoisting this dir would lose information the game needs."""
+    name = p.name.lower()
+    return (
+        name in _RESERVED_NAMES
+        or name.startswith("mod")
+        or name.startswith("dlc")
+    )
+
+
+def _ensure_mod_prefix(name: str) -> str:
+    return name if name.lower().startswith("mod") else f"mod{name}"
+
+
+def _normalize_mods_dir(mods_dir: Path) -> None:
+    """Rename any ``Mods/X/`` whose name doesn't start with ``mod`` to ``modX``.
+
+    REDengine silently skips folders without the prefix, so this is load-bearing.
+    """
+    if not mods_dir.is_dir():
+        return
+    for entry in list(mods_dir.iterdir()):
+        if entry.is_dir() and not entry.name.lower().startswith("mod"):
+            new = mods_dir / _ensure_mod_prefix(entry.name)
+            if not new.exists():
+                entry.rename(new)
+
+
+# ---------------------------------------------------------- proton prefix paths
+
+
+def _w3_documents_dir(install_path: Path, appid: str) -> Path | None:
+    """Locate the Proton prefix's ``Documents/The Witcher 3`` dir.
+
+    ``install_path`` is ``<library>/steamapps/common/The Witcher 3``, so the
+    sibling ``compatdata/<appid>/pfx/drive_c/users/steamuser/Documents/...`` is
+    where Wine maps the user's My Documents folder.
+    Returns ``None`` if no Proton prefix exists for this game.
+    """
+    steamapps = install_path.parent.parent
+    if steamapps.name != "steamapps" or not steamapps.is_dir():
+        return None
+    prefix = steamapps / "compatdata" / appid / "pfx"
+    if not prefix.is_dir():
+        return None
+    return prefix / "drive_c" / "users" / "steamuser" / "Documents" / "The Witcher 3"
+
+
+def _mods_settings_path(install_path: Path, appid: str) -> Path:
+    """Where mods.settings goes. Prefer the prefix's Documents dir; fall back
+    to the install ``Mods/`` only if no prefix exists (so we don't lose state
+    entirely on an unusual setup)."""
+    docs = _w3_documents_dir(install_path, appid)
+    if docs is not None:
+        return docs / "mods.settings"
+    return install_path / "Mods" / "mods.settings"
+
+
+# -------------------------------------------------------------------- handler
 
 
 class Witcher3Handler(BaseHandler):
@@ -41,27 +133,72 @@ class Witcher3Handler(BaseHandler):
     # ------------------------------------------------------------ payload
 
     def post_install_payload(self, payload_root: Path) -> None:
-        """Normalize the extracted payload to the W3 layout.
+        """Normalize the extracted archive to the W3 install-root layout.
 
-        Detection precedence:
-        1. If the payload already has Mods/ or DLC/ at the root, leave it alone.
-        2. If a single top-level dir wraps a W3 layout, flatten just that.
-        3. Otherwise treat the whole payload as a mod's content/ tree and
-           wrap it in Mods/mod<uuid>/content/ so W3 can find it.
+        After this runs, ``payload_root`` should look like a chunk of the
+        game install: ``Mods/modX/content/...`` and/or ``DLC/dlcY/...``.
+        ``symlink_tree`` then mirrors it straight into the game directory.
         """
-        if _looks_like_w3_layout(payload_root):
-            return
-        entries = [p for p in payload_root.iterdir() if not p.name.startswith(".")]
-        if len(entries) == 1 and entries[0].is_dir() and _looks_like_w3_layout(entries[0]):
+        # 1) Hoist single-wrapper dirs (e.g. an archive that nests everything
+        # inside ``MyMod-v2.1/``) until we're at the meaningful root. NEVER
+        # hoist a meaningful segment (``content/``, ``scripts/``, a ``modX/``
+        # folder, etc.) — those carry information the game needs.
+        for _ in range(5):
+            entries = _real_entries(payload_root)
+            if len(entries) != 1 or not entries[0].is_dir():
+                break
+            inner = entries[0]
+            if _has_install_root_layout(inner):
+                # The wrapper hides an actual install-root layout; hoist
+                # exactly once to reveal it, then break.
+                flatten_single_root(payload_root)
+                break
+            # Stop if the single inner IS itself the mod we want to keep
+            # (whether it's named modX or has a content/ tree inside).
+            if (
+                _is_meaningful_segment(inner)
+                or _is_mod_folder(inner)
+                or _is_dlc_folder(inner)
+            ):
+                break
             flatten_single_root(payload_root)
+
+        # 2) Already at install-root layout? Just enforce mod-folder naming.
+        if _has_install_root_layout(payload_root):
+            _normalize_mods_dir(payload_root / "Mods")
+            _normalize_mods_dir(payload_root / "mods")
             return
-        flatten_single_root(payload_root)
-        if _looks_like_w3_layout(payload_root):
+
+        entries = _real_entries(payload_root)
+
+        # 3) A bunch of modX/ (or dlcY/) folders at the root — wrap into Mods/DLC.
+        mod_folders = [e for e in entries if _is_mod_folder(e) and not _is_dlc_folder(e)]
+        dlc_folders = [e for e in entries if _is_dlc_folder(e)]
+        if mod_folders or dlc_folders:
+            if mod_folders:
+                mods_dir = payload_root / "Mods"
+                mods_dir.mkdir(exist_ok=True)
+                for mf in mod_folders:
+                    target = mods_dir / _ensure_mod_prefix(mf.name)
+                    if target.exists():
+                        shutil.rmtree(target)
+                    shutil.move(str(mf), str(target))
+            if dlc_folders:
+                dlc_dir = payload_root / "DLC"
+                dlc_dir.mkdir(exist_ok=True)
+                for df in dlc_folders:
+                    target = dlc_dir / df.name
+                    if target.exists():
+                        shutil.rmtree(target)
+                    shutil.move(str(df), str(target))
             return
-        wrapper = payload_root / "Mods" / f"mod{payload_root.name}" / "content"
+
+        # 4) Bare ``content/`` (or just ``scripts/``, ``bin/``…) at the root —
+        # treat the whole payload as a single mod's contents and wrap it.
+        wrapper = payload_root / "Mods" / f"mod{payload_root.name}"
         wrapper.mkdir(parents=True, exist_ok=True)
         for child in list(payload_root.iterdir()):
-            if child.name == "Mods":
+            if child.name in {"Mods", "DLC", "mods", "dlc"}:
                 continue
             shutil.move(str(child), str(wrapper / child.name))
 
@@ -73,19 +210,17 @@ class Witcher3Handler(BaseHandler):
             raise FileNotFoundError(f"game install path missing: {game_root}")
         backup_root.mkdir(parents=True, exist_ok=True)
 
-        # Link the payload tree into the game dir (uses the same mirror logic
-        # as the generic handler — backups are still recorded for any vanilla
-        # files we'd overwrite, though that's rare for W3 mods).
         files = symlink_tree(payload_root, game_root, backup_root)
 
-        # Update mods.settings for every Mods/<modname>/ we just linked in.
+        # Pick up every mod folder we just linked under Mods/.
         mod_names = sorted({
             Path(rel).parts[1]
             for rel in files
-            if Path(rel).parts[:1] == ("Mods",) and len(Path(rel).parts) >= 2
+            if len(Path(rel).parts) >= 2 and Path(rel).parts[0] in ("Mods", "mods")
         })
         if mod_names:
-            _ensure_mods_settings_entries(game_root / "Mods" / "mods.settings", mod_names, enabled=True)
+            settings_path = _mods_settings_path(game_root, game.id)
+            _ensure_mods_settings_entries(settings_path, mod_names, enabled=True)
 
         return EnableResult(files=files)
 
@@ -93,14 +228,13 @@ class Witcher3Handler(BaseHandler):
 
     def disable(self, game: GameLike, files: list[str], backup_root: Path) -> None:
         game_root = Path(game.install_path)
-        # Remove from mods.settings before tearing down the dirs.
         mod_names = sorted({
             Path(rel).parts[1]
             for rel in files
-            if Path(rel).parts[:1] == ("Mods",) and len(Path(rel).parts) >= 2
+            if len(Path(rel).parts) >= 2 and Path(rel).parts[0] in ("Mods", "mods")
         })
         if mod_names:
-            _remove_mods_settings_entries(game_root / "Mods" / "mods.settings", mod_names)
+            _remove_mods_settings_entries(_mods_settings_path(game_root, game.id), mod_names)
 
         restore_tree(game_root, files, backup_root)
 
@@ -110,19 +244,30 @@ class Witcher3Handler(BaseHandler):
         return [
             {
                 "id": "script_merger_status",
-                "label": "Script Merger",
-                "description": "Detect, install, and launch the Witcher 3 Script Merger.",
-            }
+                "label": "Script Merger (Proton GUI)",
+                "description": "Detect, install, and launch the Windows Script Merger under Proton.",
+            },
+            {
+                "id": "script_merger_native",
+                "label": "Script Merger (native Linux)",
+                "description": "Merge .ws scripts from enabled mods using GNU diff3 — no Proton required.",
+            },
         ]
 
     async def run_tool(self, tool_id: str, game: GameLike, **kwargs) -> dict:
-        from tools.script_merger import script_merger_action
-
         if tool_id == "script_merger_status":
+            from tools.script_merger import script_merger_action
             return await script_merger_action(
                 kwargs.get("action", "status"),
                 Path(game.install_path),
                 api_key=kwargs.get("api_key"),
+            )
+        if tool_id == "script_merger_native":
+            from tools.script_merger_native import native_merge
+            return await native_merge(
+                Path(game.install_path),
+                mods=kwargs.get("mods", []),
+                mods_settings_path=_mods_settings_path(Path(game.install_path), game.id),
             )
         return await super().run_tool(tool_id, game, **kwargs)
 
@@ -143,7 +288,7 @@ def _read_mods_settings(path: Path) -> configparser.ConfigParser:
 
 def _write_mods_settings(path: Path, cp: configparser.ConfigParser) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".settings.tmp")
+    tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         cp.write(f, space_around_delimiters=False)
     tmp.replace(path)

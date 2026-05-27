@@ -1,6 +1,7 @@
 import {
   ButtonItem,
   ConfirmModal,
+  Focusable,
   PanelSection,
   PanelSectionRow,
   TextField,
@@ -26,7 +27,9 @@ import {
   nexusInstall,
   nexusModFiles,
   nexusSearch,
+  NativeMergerResult,
   scriptMerger,
+  scriptMergerNative,
   ScriptMergerStatus,
   setNexusApiKey,
   SettingsView,
@@ -205,23 +208,24 @@ function NexusInstallModal({
         {loading && <Loading label="Loading file list..." />}
         {error && <div style={{ color: "#ff6b6b" }}>{error}</div>}
         {files?.map((f) => (
-          <div
+          <Focusable
             key={f.file_id}
-            onClick={() => setSelected(f)}
+            onActivate={() => setSelected(f)}
             style={{
-              padding: 6,
+              padding: 8,
               border: "1px solid #444",
               borderColor: selected?.file_id === f.file_id ? "#67c4ff" : "#444",
               borderRadius: 4,
               cursor: "pointer",
+              outline: "none",
             }}
           >
             <div>{f.name}</div>
-            <div style={{ fontSize: 11, opacity: 0.7 }}>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>
               {f.category} · v{f.version || "?"} · {(f.size_kb / 1024).toFixed(1)} MB
               {f.is_primary && " · MAIN"}
             </div>
-          </div>
+          </Focusable>
         ))}
         {err && <div style={{ color: "#ff6b6b" }}>{err}</div>}
         <div style={{ fontSize: 11, opacity: 0.6, marginTop: 6 }}>
@@ -388,6 +392,7 @@ function NexusTab({ game, onChange }: { game: Game; onChange: () => void }) {
 
 function W3ToolsTab({ game }: { game: Game }) {
   const [status, setStatus] = useState<ScriptMergerStatus | null>(null);
+  const [native, setNative] = useState<NativeMergerResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -419,41 +424,105 @@ function W3ToolsTab({ game }: { game: Game }) {
     }
   };
 
+  const runNative = async () => {
+    setBusy(true);
+    setErr(null);
+    setNative(null);
+    try {
+      setNative(await scriptMergerNative(game.id));
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <PanelSection title="Witcher 3 — Script Merger">
-      {status && (
-        <>
-          <PanelSectionRow>
-            <div style={{ fontSize: 12 }}>
-              <div>Installed: {status.installed ? "yes" : "no"}</div>
-              {status.exe_path && <div style={{ opacity: 0.7, wordBreak: "break-all" }}>at {status.exe_path}</div>}
-              <div>Proton: {status.proton_path ? "found" : "not found"}</div>
-              {status.proton_path && <div style={{ opacity: 0.7, wordBreak: "break-all" }}>at {status.proton_path}</div>}
-            </div>
-          </PanelSectionRow>
-          {!status.installed && (
+    <>
+      <PanelSection title="Witcher 3 — Script Merger (Proton GUI)">
+        {status && (
+          <>
             <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => doAction("install")} disabled={busy}>
-                {busy ? "Downloading..." : "Install Script Merger"}
-              </ButtonItem>
+              <div style={{ fontSize: 12 }}>
+                <div>Installed: {status.installed ? "yes" : "no"}</div>
+                {status.exe_path && <div style={{ opacity: 0.7, wordBreak: "break-all" }}>at {status.exe_path}</div>}
+                <div>Proton: {status.proton_path ? "found" : "not found"}</div>
+                {status.proton_path && <div style={{ opacity: 0.7, wordBreak: "break-all" }}>at {status.proton_path}</div>}
+              </div>
             </PanelSectionRow>
-          )}
-          {status.installed && (
+            {!status.installed && (
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => doAction("install")} disabled={busy}>
+                  {busy ? "Downloading..." : "Install Script Merger"}
+                </ButtonItem>
+              </PanelSectionRow>
+            )}
+            {status.installed && (
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => doAction("launch")} disabled={busy || !status.proton_path}>
+                  {status.proton_path ? "Launch Script Merger" : "Install Proton first"}
+                </ButtonItem>
+              </PanelSectionRow>
+            )}
+          </>
+        )}
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={refresh} disabled={busy}>
+            <FaSync style={{ marginRight: 6 }} /> Re-check
+          </ButtonItem>
+        </PanelSectionRow>
+        {err && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 12 }}>{err}</div></PanelSectionRow>}
+      </PanelSection>
+
+      <PanelSection title="Witcher 3 — Native Merger (Linux)">
+        <PanelSectionRow>
+          <div style={{ fontSize: 14, opacity: 0.85 }}>
+            Merges .ws scripts from enabled mods using GNU diff3. Conflicts auto-resolve to the
+            higher-priority mod (per mods.settings). Output goes to Mods/mod0000_DeckyMerged/.
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={runNative} disabled={busy}>
+            <FaTools style={{ marginRight: 6 }} /> {busy ? "Merging..." : "Run native merger"}
+          </ButtonItem>
+        </PanelSectionRow>
+        {native && (
+          <>
             <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => doAction("launch")} disabled={busy || !status.proton_path}>
-                {status.proton_path ? "Launch Script Merger" : "Install Proton first"}
-              </ButtonItem>
+              <div style={{ fontSize: 14 }}>
+                Merged <b>{native.merged_files.length}</b> file(s) into {native.merged_mod_name}.
+              </div>
             </PanelSectionRow>
-          )}
-        </>
-      )}
-      <PanelSectionRow>
-        <ButtonItem layout="below" onClick={refresh} disabled={busy}>
-          <FaSync style={{ marginRight: 6 }} /> Re-check
-        </ButtonItem>
-      </PanelSectionRow>
-      {err && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 12 }}>{err}</div></PanelSectionRow>}
-    </PanelSection>
+            {native.conflicts_auto_resolved.length > 0 && (
+              <PanelSectionRow>
+                <div style={{ fontSize: 14, color: "#ffb86c" }}>
+                  Auto-resolved {native.conflicts_auto_resolved.length} conflict(s) — kept higher-priority side.
+                </div>
+              </PanelSectionRow>
+            )}
+            {native.conflicts_auto_resolved.slice(0, 8).map((f) => (
+              <PanelSectionRow key={f}>
+                <div style={{ fontSize: 13, opacity: 0.8, wordBreak: "break-all" }}>{f}</div>
+              </PanelSectionRow>
+            ))}
+            {native.conflicts_auto_resolved.length > 8 && (
+              <PanelSectionRow>
+                <div style={{ fontSize: 13, opacity: 0.6 }}>
+                  …and {native.conflicts_auto_resolved.length - 8} more.
+                </div>
+              </PanelSectionRow>
+            )}
+            {native.skipped_no_vanilla.length > 0 && (
+              <PanelSectionRow>
+                <div style={{ fontSize: 14, color: "#ff6b6b" }}>
+                  Skipped {native.skipped_no_vanilla.length} file(s) with no vanilla baseline.
+                </div>
+              </PanelSectionRow>
+            )}
+          </>
+        )}
+      </PanelSection>
+    </>
   );
 }
 
@@ -506,20 +575,25 @@ function GameDetail({
 }
 
 function TabPill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  // Focusable makes this D-pad reachable and A-button activatable in
+  // Steam Deck Gaming Mode. A bare <div onClick> would only work for
+  // touchscreen/mouse, which the deck doesn't have in game mode.
   return (
-    <div
-      onClick={onClick}
+    <Focusable
+      onActivate={onClick}
+      focusWithinClassName="gpfocuswithin"
       style={{
-        padding: "4px 10px",
-        borderRadius: 12,
+        padding: "6px 12px",
+        borderRadius: 14,
         background: active ? "#67c4ff" : "#2a2a2a",
         color: active ? "#000" : "#ddd",
-        fontSize: 12,
+        fontSize: 14,
         cursor: "pointer",
+        outline: "none",
       }}
     >
       {label}
-    </div>
+    </Focusable>
   );
 }
 

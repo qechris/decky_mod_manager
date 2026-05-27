@@ -122,6 +122,26 @@ class Plugin:
         api_key = self.settings.get("nexus_api_key") or None
         return await script_merger_action(action, Path(game.install_path), api_key=api_key)
 
+    async def script_merger_native(self, game_id: str) -> dict:
+        """Native diff3-based .ws merger for Witcher 3 — no Proton needed."""
+        game = self._get_game(game_id)
+        enabled = [m for m in self.manager.list_mods(game.id) if m.enabled]
+        # The handler needs each mod's on-disk folder name. We derive it from
+        # the relative paths recorded at enable time.
+        from pathlib import Path
+        mods_payload = []
+        for m in enabled:
+            folders = {
+                Path(rel).parts[1]
+                for rel in m.files
+                if len(Path(rel).parts) >= 2 and Path(rel).parts[0] in ("Mods", "mods")
+            }
+            for folder in folders:
+                mods_payload.append({"id": m.id, "folder": folder, "name": m.name})
+        return await self.manager.handler_for(game.id).run_tool(
+            "script_merger_native", game, mods=mods_payload,
+        )
+
     # ----------------------------- helpers -------------------------------
 
     def _get_game(self, game_id: str) -> Game:

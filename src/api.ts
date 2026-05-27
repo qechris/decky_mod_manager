@@ -52,6 +52,14 @@ export interface ScriptMergerStatus {
   data_dir: string;
 }
 
+export interface NativeMergerResult {
+  merged_mod_name: string;
+  merged_files: string[];
+  conflicts_auto_resolved: string[];
+  skipped_no_vanilla: string[];
+  output_dir: string;
+}
+
 // -------- discovery --------
 export const listGames = callable<[], Game[]>("list_games");
 export const listMods = callable<[string], Mod[]>("list_mods");
@@ -82,3 +90,4 @@ export const scriptMerger =
   callable<[string, "status" | "install" | "launch"], ScriptMergerStatus & { launched?: boolean }>(
     "script_merger",
   );
+export const scriptMergerNative = callable<[string], NativeMergerResult>("script_merger_native");
