@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The plugin runtime is PyInstaller-frozen Python with stdlib only.
+      # Tests must mirror that — no `pip install` for runtime deps. The
+      # diff3-based tests need GNU diffutils + p7zip on the runner.
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y diffutils p7zip-full unrar-free
+      - name: Run unittest
+        run: python3 -m unittest discover -s tests --verbose
+
+  frontend:
+    name: TypeScript + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: tsc --noEmit
+        run: node_modules/.bin/tsc --noEmit
+      - name: Build
+        run: pnpm run build
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
