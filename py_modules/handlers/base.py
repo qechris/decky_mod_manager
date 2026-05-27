@@ -64,16 +64,24 @@ class BaseHandler:
 
 # --------------------------------------------------------------- utilities
 
-def flatten_single_root(dest: Path) -> None:
+def flatten_single_root(dest: Path) -> bool:
     """If a fresh extraction produced exactly one top-level dir, hoist its
     contents up so the payload root maps directly to the game-install root.
-    No-op when the payload has multiple top-level entries."""
+
+    Returns ``True`` if it hoisted something, ``False`` if it was a no-op
+    (because the payload has zero, multiple, or non-directory top-level
+    entries). Callers that need to handle the multi-entry case differently
+    should check the return value rather than assuming this normalized the
+    layout.
+    """
     entries = [p for p in dest.iterdir() if not p.name.startswith(".")]
-    if len(entries) == 1 and entries[0].is_dir():
-        inner = entries[0]
-        for child in list(inner.iterdir()):
-            shutil.move(str(child), str(dest / child.name))
-        inner.rmdir()
+    if len(entries) != 1 or not entries[0].is_dir():
+        return False
+    inner = entries[0]
+    for child in list(inner.iterdir()):
+        shutil.move(str(child), str(dest / child.name))
+    inner.rmdir()
+    return True
 
 
 def iter_files(root: Path) -> Iterable[Path]:

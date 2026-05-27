@@ -16,6 +16,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "py_modules"))
 
+from handlers.base import flatten_single_root  # noqa: E402
 from handlers.witcher3 import Witcher3Handler  # noqa: E402
 
 
@@ -132,6 +133,47 @@ class LayoutNormalizerTests(unittest.TestCase):
         self.h.post_install_payload(self.root)
         files = _all_files(self.root)
         self.assertIn("Mods/modFoo/content/scripts/x.ws", files)
+
+
+class FlattenSingleRootTests(unittest.TestCase):
+    """Pin down flatten_single_root's contract — particularly its return
+    value, which signals whether the layout was actually normalized."""
+
+    def setUp(self) -> None:
+        self._td = TemporaryDirectory()
+        self.root = Path(self._td.name)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_single_dir_returns_true_and_hoists(self) -> None:
+        _touch(self.root / "wrapper" / "a.txt")
+        _touch(self.root / "wrapper" / "b.txt")
+        self.assertTrue(flatten_single_root(self.root))
+        self.assertEqual(_all_files(self.root), {"a.txt", "b.txt"})
+
+    def test_multiple_entries_returns_false_no_op(self) -> None:
+        _touch(self.root / "a" / "x.txt")
+        _touch(self.root / "b" / "y.txt")
+        self.assertFalse(flatten_single_root(self.root))
+        # Layout untouched — caller's responsibility to handle multi-entry
+        self.assertEqual(_all_files(self.root), {"a/x.txt", "b/y.txt"})
+
+    def test_single_file_returns_false(self) -> None:
+        _touch(self.root / "lone.txt")
+        self.assertFalse(flatten_single_root(self.root))
+        self.assertEqual(_all_files(self.root), {"lone.txt"})
+
+    def test_empty_dir_returns_false(self) -> None:
+        self.assertFalse(flatten_single_root(self.root))
+
+    def test_dotfile_entries_are_ignored(self) -> None:
+        # macOS sticks .DS_Store everywhere; archives may carry .git/.svn —
+        # we shouldn't let those make us think it's a multi-entry payload.
+        _touch(self.root / ".DS_Store")
+        _touch(self.root / "wrapper" / "a.txt")
+        self.assertTrue(flatten_single_root(self.root))
+        self.assertEqual(_all_files(self.root), {".DS_Store", "a.txt"})
 
 
 if __name__ == "__main__":

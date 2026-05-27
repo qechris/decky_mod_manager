@@ -35,11 +35,32 @@ except Exception:  # running outside Decky (tests)
     _LOG = logging.getLogger("mod_manager")
 
 
-STEAM_VDF_APPMANIFEST_RE = re.compile(
-    r'"appid"\s*"(?P<appid>\d+)".*?"name"\s*"(?P<name>[^"]+)".*?"installdir"\s*"(?P<installdir>[^"]+)"',
-    re.DOTALL,
+# Parse appmanifest_*.acf top-level fields independently. The previous
+# single-regex-with-DOTALL approach assumed a specific field order and could
+# in principle false-match if a name field contained the literal "installdir".
+# Three targeted regexes (one per field, anchored to start-of-line) are
+# robust to field reordering and to ill-behaved values.
+_STEAM_VDF_APPID_RE = re.compile(r'^\s*"appid"\s*"(?P<appid>\d+)"', re.MULTILINE)
+_STEAM_VDF_NAME_RE = re.compile(r'^\s*"name"\s*"(?P<name>[^"]+)"', re.MULTILINE)
+_STEAM_VDF_INSTALLDIR_RE = re.compile(
+    r'^\s*"installdir"\s*"(?P<installdir>[^"]+)"', re.MULTILINE
 )
 STEAM_VDF_LIBRARYFOLDER_RE = re.compile(r'"path"\s*"(?P<path>[^"]+)"')
+
+
+def _parse_appmanifest(text: str) -> dict[str, str] | None:
+    """Extract appid/name/installdir from an appmanifest_*.acf body.
+    Returns ``None`` if any required field is missing."""
+    appid = _STEAM_VDF_APPID_RE.search(text)
+    name = _STEAM_VDF_NAME_RE.search(text)
+    installdir = _STEAM_VDF_INSTALLDIR_RE.search(text)
+    if not (appid and name and installdir):
+        return None
+    return {
+        "appid": appid.group("appid"),
+        "name": name.group("name"),
+        "installdir": installdir.group("installdir"),
+    }
 
 
 @dataclass
@@ -142,14 +163,17 @@ class ModManager:
                     text = manifest.read_text(errors="ignore")
                 except OSError:
                     continue
-                m = STEAM_VDF_APPMANIFEST_RE.search(text)
-                if not m:
+                fields = _parse_appmanifest(text)
+                if fields is None:
                     continue
-                appid = m.group("appid")
-                install_path = apps_dir / "common" / m.group("installdir")
+                install_path = apps_dir / "common" / fields["installdir"]
                 if not install_path.exists():
                     continue
-                seen[appid] = Game(id=appid, name=m.group("name"), install_path=str(install_path))
+                seen[fields["appid"]] = Game(
+                    id=fields["appid"],
+                    name=fields["name"],
+                    install_path=str(install_path),
+                )
 
         return sorted(seen.values(), key=lambda g: g.name.lower())
 
