@@ -327,25 +327,65 @@ def _extract_archive(archive: Path, dest: Path) -> None:
         with tarfile.open(archive) as tf:
             tf.extractall(dest)
     elif name.endswith(".7z"):
-        try:
-            import py7zr  # type: ignore
-        except ImportError as e:
-            raise RuntimeError(
-                "7z archives require the 'py7zr' package; install it or convert the mod to zip"
-            ) from e
-        with py7zr.SevenZipFile(archive) as sz:
-            sz.extractall(dest)
+        _extract_via_python_or_subprocess(
+            archive, dest,
+            py_module="py7zr",
+            py_extract=lambda mod, a, d: mod.SevenZipFile(a).extractall(d),
+            cli_bins=("7z", "7zz", "7za", "7zr"),
+            cli_args=("x", "-y", "-o{dest}", "{archive}"),
+        )
     elif name.endswith(".rar"):
-        try:
-            import rarfile  # type: ignore
-        except ImportError as e:
-            raise RuntimeError(
-                "rar archives require the 'rarfile' package; install it or convert the mod to zip"
-            ) from e
-        with rarfile.RarFile(archive) as rf:
-            rf.extractall(dest)
+        _extract_via_python_or_subprocess(
+            archive, dest,
+            py_module="rarfile",
+            py_extract=lambda mod, a, d: mod.RarFile(a).extractall(d),
+            cli_bins=("unrar", "rar"),
+            cli_args=("x", "-y", "-o+", "{archive}", "{dest}/"),
+        )
     else:
         raise ValueError(f"unsupported archive format: {archive.name}")
+
+
+def _extract_via_python_or_subprocess(
+    archive: Path,
+    dest: Path,
+    *,
+    py_module: str,
+    py_extract,
+    cli_bins: tuple[str, ...],
+    cli_args: tuple[str, ...],
+) -> None:
+    """Try the pure-Python extractor first; fall back to a CLI binary.
+
+    Decky's plugin Python is PyInstaller-frozen and ships with no third-
+    party extractors. SteamOS does ship ``7z`` / ``unrar`` system-wide, so
+    we shell out to those when the Python module isn't importable. This is
+    the difference between "Nexus install silently fails" and "Nexus
+    install works for every common archive format users encounter."
+    """
+    import importlib
+    import subprocess as _sp
+    try:
+        mod = importlib.import_module(py_module)
+        dest.mkdir(parents=True, exist_ok=True)
+        py_extract(mod, archive, dest)
+        return
+    except ImportError:
+        pass  # fall through to CLI
+    cli = next((shutil.which(b) for b in cli_bins if shutil.which(b)), None)
+    if cli is None:
+        raise RuntimeError(
+            f"can't extract {archive.name}: neither the Python '{py_module}' "
+            f"module nor any of {list(cli_bins)} is available on this system"
+        )
+    dest.mkdir(parents=True, exist_ok=True)
+    args = [cli] + [a.format(archive=str(archive), dest=str(dest)) for a in cli_args]
+    result = _sp.run(args, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{cli_bins[0]} failed (rc={result.returncode}) extracting "
+            f"{archive.name}:\n{result.stderr[:500] or result.stdout[:500]}"
+        )
 
 
 def to_payload(obj: Any) -> Any:

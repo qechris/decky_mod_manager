@@ -143,25 +143,11 @@ async def _install(api_key: str) -> dict:
 
 
 def _extract_into(archive: Path, dest: Path) -> None:
-    import tarfile
-    import zipfile
-
-    name = archive.name.lower()
-    if name.endswith(".zip"):
-        with zipfile.ZipFile(archive) as zf:
-            zf.extractall(dest)
-    elif name.endswith((".tar.gz", ".tgz", ".tar")):
-        with tarfile.open(archive) as tf:
-            tf.extractall(dest)
-    elif name.endswith(".7z"):
-        try:
-            import py7zr  # type: ignore
-        except ImportError as e:
-            raise NexusError("7z extraction needs the 'py7zr' package") from e
-        with py7zr.SevenZipFile(archive) as sz:
-            sz.extractall(dest)
-    else:
-        raise NexusError(f"don't know how to extract {archive.name}")
+    """Delegate to the mod manager's extractor, which handles the
+    py7zr / system-7z fallback. Script Merger downloads are .7z so this
+    path is exercised every time the user installs it."""
+    from mod_manager import _extract_archive
+    _extract_archive(archive, dest)
 
 
 async def _launch(game_install: Path) -> dict:
