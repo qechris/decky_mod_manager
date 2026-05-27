@@ -4,7 +4,12 @@ import decky
 
 from mod_manager import Game, ModManager, to_payload
 from nexus import NexusClient, NexusError
-from settings import Settings
+# NOTE: do NOT name this module `settings` — Decky Loader ships a
+# PyInstaller-bundled `decky_loader.settings` whose modules become importable
+# at the bare name, shadowing any same-named module in py_modules/. We hit this
+# in production; the symptom is "ImportError: cannot import name 'Settings'
+# from 'decky_loader.settings'". Keep this module's filename namespaced.
+from mm_settings import Settings
 
 
 class Plugin:
