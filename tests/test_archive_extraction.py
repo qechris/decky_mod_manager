@@ -83,5 +83,15 @@ class UnsupportedFormatTests(unittest.TestCase):
             self.assertIn("unsupported archive format", str(ctx.exception))
 
 
+class NoExtensionTests(unittest.TestCase):
+    def test_zip_without_extension(self) -> None:
+        with TemporaryDirectory() as td:
+            archive = Path(td) / "59b511b6-c255-4715-847c-75bcebc8457b"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("a/b.txt", "hi")
+            _extract_archive(archive, Path(td) / "out")
+            self.assertEqual((Path(td) / "out" / "a" / "b.txt").read_text(), "hi")
+
+
 if __name__ == "__main__":
     unittest.main()
