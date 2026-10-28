@@ -407,10 +407,8 @@ def _safe_tar_extract(tf: tarfile.TarFile, dest: Path) -> None:
         return
     root = dest.resolve()
     for m in tf.getmembers():
-        target = (dest / m.name).resolve()
-        link = (target.parent / m.linkname).resolve() if m.issym() or m.islnk() else target
-        if not (target.is_relative_to(root) and link.is_relative_to(root)) or m.isdev():
-            raise ValueError(f"unsafe path in archive: {m.name}")
+        if not (m.isfile() or m.isdir()) or not (dest / m.name).resolve().is_relative_to(root):
+            raise ValueError(f"unsafe entry in archive: {m.name}")
     tf.extractall(dest)
 
 
