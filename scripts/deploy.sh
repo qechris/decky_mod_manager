@@ -56,7 +56,9 @@ fi
 # not a silent wrong-place deploy.
 echo "==> rsync to $DECK_HOST:$DECK_PLUGIN_DIR"
 
-rsync -azP --delete \
+# --inplace: Decky chowns the plugin dir and plugin.json to root when it
+# loads the plugin, so rsync can't create temp files there.
+rsync -azP --delete --inplace \
   -e "ssh -p $DECK_SSH_PORT" \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
@@ -73,14 +75,11 @@ rsync -azP --delete \
   ./ "$DECK_HOST:$DECK_PLUGIN_DIR/"
 
 # --- reload ---------------------------------------------------------------
-# >>> YOUR DECISION GOES HERE <<<
-# Implement reload_plugin() to pick a restart strategy. See the prompt for
-# the trade-offs. Should be 5-10 lines.
 reload_plugin() {
-  # Pair `"flags": ["debug"]` in plugin.json (auto-reloads frontend dist) with
-  # a targeted kill of the backend child (Decky's parent process respawns it).
-  # Fast (~1s), isolated to this plugin, no sudo, no full-loader restart.
-  "${SSH[@]}" "pkill -f 'mod_manager/main.py' || true"
+  # Killing the backend process leaves Decky 3.2 spinning on the dead socket,
+  # so ask Decky to reload it through the Steam CEF debugger (port 8080).
+  "${SSH[@]}" -f -o ExitOnForwardFailure=yes -L 8081:localhost:8080 sleep 10
+  node scripts/reload.mjs 8081
 }
 
 if [[ $NO_RELOAD -eq 0 ]]; then

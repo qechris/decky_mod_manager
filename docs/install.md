@@ -67,15 +67,15 @@ This isn't well-supported — Option 2 from a real dev machine is much smoother.
 ## Setting up your Nexus API key
 
 1. Sign in at [nexusmods.com](https://www.nexusmods.com).
-2. **My account → API Access → Generate a personal API key**.
+2. Go to [nexusmods.com/settings/api-keys](https://www.nexusmods.com/settings/api-keys) and make a personal API key.
 3. Copy it.
-4. On the Deck, QAM → Decky → Mod Manager → Back-arrow to Decky home → **Settings → New API key → paste → Save key**.
+4. On the Deck, QAM → Decky → Mod Manager → **Settings → API key → paste → Save key**.
 5. The key is stored in `~/.local/share/decky-mod-manager/settings.json`
    on the Deck. It's never sent anywhere except `api.nexusmods.com`.
 
-> Free Nexus accounts can search and view metadata, but downloading
-> through the API requires a one-time NXM:// link click from the mod's
-> Nexus page in a browser. Premium accounts can download directly.
+> Free Nexus accounts can browse and search, but each download needs an
+> `nxm://` link from the mod's Nexus page (**Mod manager download**).
+> Premium accounts download directly.
 
 ## Enabling SSH on the Deck
 

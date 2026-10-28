@@ -1,19 +1,14 @@
-"""Nexus Mods client.
+"""Nexus Mods client for the v3 API (https://api.nexusmods.com/openapi.yaml).
 
-Three things this talks to:
+Two gaps in v3 are filled from older APIs:
 
-1. ``https://search.nexusmods.com/mods`` — undocumented but stable JSON search
-   used by Nexus's own site for autocomplete. No auth required.
-2. ``https://api.nexusmods.com/v1/...`` — official v1 REST API for mod info,
-   file lists, and download links. Requires the user's personal API key
-   (Authorization: ``apikey: <key>`` header).
-3. ``https://www.nexusmods.com/games`` — a static JSON listing of all games
-   with their numeric ID and ``domain_name``. Cached on first use.
+* v3 search has no text query, so name search uses the v2 GraphQL ``mods``
+  query. Browsing (trending, popular, new, updated) uses v3.
+* v3 resolves a Steam appid to a numeric game id but not a domain name, so
+  the id is mapped to a domain through the v1 games index.
 
-Free Nexus accounts can only obtain download links via the v1 API by passing
-a one-time ``key``/``expires`` pair issued in an NXM link clicked in the
-browser. Premium accounts can request a link directly. We support both:
-``download_link()`` takes optional NXM credentials.
+Free accounts can only download with the ``key``/``expires`` pair from an
+``nxm://`` link made by the website. Premium accounts download directly.
 """
 
 from __future__ import annotations
@@ -26,20 +21,19 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-USER_AGENT = "decky-mod-manager/0.1 (+https://github.com/local)"
-V1_BASE = "https://api.nexusmods.com/v1"
+USER_AGENT = "decky-mod-manager/0.2.0"
+V3_BASE = "https://api.nexusmods.com/v3"
 V2_GRAPHQL_URL = "https://api.nexusmods.com/v2/graphql"
-GAMES_INDEX_URL = f"{V1_BASE}/games.json"
+GAMES_INDEX_URL = "https://api.nexusmods.com/v1/games.json"
+# Sort -> time range. Nexus defaults trending/popular to 7 days, which is
+# empty for smaller games.
+BROWSE_SORTS = {"trending": "28", "popular": "all", "new": "all", "updated": "all"}
+_HIDDEN_FILE_CATEGORIES = {"old_version", "removed", "archived"}
 
-# Nexus retired the undocumented ``search.nexusmods.com/mods`` endpoint
-# (Cloudflare authoritatively returns NXDOMAIN). The replacement is the v2
-# GraphQL API at ``api.nexusmods.com/v2/graphql``; the ``mods`` query takes
-# a ``nameStemmed`` filter that gives stemmed/fuzzy matching against the
-# mod name. Verified live against the deck.
 _SEARCH_GQL = """
 query SearchMods($q: String!, $domain: String!, $count: Int!) {
   mods(
@@ -50,39 +44,15 @@ query SearchMods($q: String!, $domain: String!, $count: Int!) {
     sort: { downloads: { direction: DESC } }
     count: $count
   ) {
-    nodes {
-      modId
-      name
-      uploader { name }
-      downloads
-      endorsements
-      pictureUrl
-      adultContent
-    }
+    nodes { modId name summary uploader { name } downloads endorsements thumbnailUrl updatedAt }
   }
 }
 """
 
 
 def _build_ssl_context() -> ssl.SSLContext:
-    """Build an SSLContext that can actually verify Nexus's certificate.
-
-    Decky's bundled Python (PyInstaller-frozen loader) doesn't pick up the
-    system CA bundle through ``ssl.create_default_context()`` — the default
-    context comes up with an empty CA store, so every HTTPS request fails
-    with ``CERTIFICATE_VERIFY_FAILED``. We hit this in production on the
-    Deck: Nexus search silently rendered "No results." because the frontend
-    swallowed the exception.
-
-    Lookup order:
-    1. ``SSL_CERT_FILE`` env var (user override)
-    2. Common Linux distro paths — SteamOS uses
-       ``/etc/ssl/certs/ca-certificates.crt`` (symlink into
-       ``/etc/ca-certificates/extracted/tls-ca-bundle.pem``)
-    3. ``certifi`` if installed
-    4. Default context (will fail in Decky's sandbox, but at least the
-       error message will be informative)
-    """
+    """Decky's PyInstaller-frozen Python starts with an empty CA store, so
+    every HTTPS request fails unless we point it at the system bundle."""
     ctx = ssl.create_default_context()
     cafile = os.environ.get("SSL_CERT_FILE")
     if not cafile or not os.path.exists(cafile):
@@ -111,328 +81,303 @@ def _build_ssl_context() -> ssl.SSLContext:
 _SSL_CONTEXT = _build_ssl_context()
 
 
-# Appid → Nexus domain. Seeded with the ones we explicitly support; extended
-# at runtime by matching the game's name against the Nexus games index.
-APPID_TO_NEXUS_DOMAIN: dict[str, str] = {
-    "292030": "witcher3",       # The Witcher 3
-    "489830": "skyrimspecialedition",
-    "377160": "fallout4",
-    "1086940": "baldursgate3",
-    "1091500": "cyberpunk2077",
-    "22380": "newvegas",        # Fallout: New Vegas
-    "72850": "skyrim",
-    "611670": "kingdomcomedeliverance",
-    "1245620": "eldenring",
-    "1817070": "marvelsspiderman",
-    "1888160": "starfield",
-}
-
-
 class NexusError(RuntimeError):
     pass
 
 
+class NexusKeyRequired(NexusError):
+    pass
+
+
 @dataclass
-class NexusSearchHit:
+class NexusMod:
     mod_id: int
     name: str
+    summary: str
     author: str
     downloads: int
     endorsements: int
     image: str | None
+    updated_at: str
 
     def to_dict(self) -> dict:
-        return {
-            "mod_id": self.mod_id,
-            "name": self.name,
-            "author": self.author,
-            "downloads": self.downloads,
-            "endorsements": self.endorsements,
-            "image": self.image,
-        }
+        return asdict(self)
 
 
 @dataclass
-class NexusModFile:
+class NexusFile:
     file_id: int
     name: str
     version: str
-    size_kb: int
     category: str
     is_primary: bool
 
     def to_dict(self) -> dict:
-        return {
-            "file_id": self.file_id,
-            "name": self.name,
-            "version": self.version,
-            "size_kb": self.size_kb,
-            "category": self.category,
-            "is_primary": self.is_primary,
-        }
+        return asdict(self)
 
 
-# ----------------------------------------------------------------- transport
+@dataclass
+class NxmLink:
+    domain: str
+    mod_id: int
+    file_id: int
+    key: str | None
+    expires: int | None
+
+
+def parse_nxm(url: str) -> NxmLink:
+    """Parse ``nxm://<domain>/mods/<mod>/files/<file>?key=..&expires=..``."""
+    parts = urllib.parse.urlsplit(url.strip())
+    segs = [s for s in parts.path.split("/") if s]
+    if parts.scheme != "nxm" or len(segs) != 4 or segs[0] != "mods" or segs[2] != "files":
+        raise NexusError("That is not a Nexus mod download link (nxm://...).")
+    q = dict(urllib.parse.parse_qsl(parts.query))
+    try:
+        return NxmLink(
+            domain=parts.netloc.lower(),
+            mod_id=int(segs[1]),
+            file_id=int(segs[3]),
+            key=q.get("key"),
+            expires=int(q["expires"]) if "expires" in q else None,
+        )
+    except ValueError as e:
+        raise NexusError("That nxm:// link is malformed.") from e
 
 
 def _percent_encode_path(url: str) -> str:
-    """Re-encode a URL's path so it's safe for ``urllib.request.urlopen``.
-
-    Nexus's CDN returns links whose filename contains raw spaces. Python's
-    urllib refuses these with ``URL can't contain control characters``.
-    We split, ``quote`` just the path (preserving ``/``), and reassemble.
-    Already-encoded components survive because ``quote`` leaves ``%`` alone
-    when its ``safe`` set includes ``%``.
-    """
+    """Nexus CDN links can contain raw spaces, which urllib rejects."""
     parts = urllib.parse.urlsplit(url)
-    safe_path = urllib.parse.quote(parts.path, safe="/%")
-    return urllib.parse.urlunsplit(parts._replace(path=safe_path))
+    return urllib.parse.urlunsplit(parts._replace(path=urllib.parse.quote(parts.path, safe="/%")))
 
 
-def _request(
+def _request_json(
     url: str,
     *,
-    headers: dict[str, str] | None = None,
-    timeout: float = 20.0,
-) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
+    api_key: str | None = None,
+    body: Any = None,
+    method: str | None = None,
+) -> Any:
+    headers = {"User-Agent": USER_AGENT, "Application-Name": "Decky Mod Manager"}
+    if api_key:
+        headers["apikey"] = api_key
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=timeout) as resp:
-            return resp.read()
+        with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=20) as resp:
+            return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:300]
-        raise NexusError(f"HTTP {e.code} for {url}: {body}") from e
+        raise _http_error(e) from e
     except urllib.error.URLError as e:
-        raise NexusError(f"network error for {url}: {e.reason}") from e
-
-
-def _request_json(url: str, *, headers: dict[str, str] | None = None) -> Any:
-    raw = _request(url, headers=headers)
-    try:
-        return json.loads(raw)
+        raise NexusError(f"Can't reach Nexus: {e.reason}") from e
     except json.JSONDecodeError as e:
-        raise NexusError(f"bad JSON from {url}") from e
+        raise NexusError("Nexus sent a reply we couldn't read.") from e
 
 
-# --------------------------------------------------------------- games index
+def _http_error(e: urllib.error.HTTPError) -> NexusError:
+    detail = ""
+    try:
+        detail = json.loads(e.read()).get("detail") or ""
+    except (ValueError, AttributeError):
+        pass
+    if e.code == 401:
+        return NexusError("Nexus rejected the API key. Check it in Settings.")
+    if e.code == 403 and "key" in detail.lower():
+        return NexusKeyRequired(detail)
+    if e.code in (400, 410):
+        return NexusKeyRequired(detail or "The download link has expired. Get a new one.")
+    if e.code == 404:
+        return NexusError("Not found on Nexus.")
+    if e.code == 429:
+        return NexusError("Nexus rate limit hit. Try again in a minute.")
+    return NexusError(f"Nexus error {e.code}: {detail}".rstrip(": "))
 
 
-class _GamesIndex:
-    """Caches the Nexus games list so we can map names → domain."""
-
-    def __init__(self, cache_dir: Path):
-        self.cache_dir = cache_dir
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_file = cache_dir / "nexus_games.json"
-        self._index: dict[str, dict] | None = None  # domain_name -> entry
-
-    def _load_cached(self) -> dict[str, dict] | None:
-        if not self.cache_file.exists():
-            return None
-        if time.time() - self.cache_file.stat().st_mtime > 7 * 86400:
-            return None
-        try:
-            return {g["domain_name"]: g for g in json.loads(self.cache_file.read_text())}
-        except (json.JSONDecodeError, OSError, KeyError):
-            return None
-
-    def _fetch(self, api_key: str) -> dict[str, dict]:
-        data = _request_json(GAMES_INDEX_URL, headers={"apikey": api_key})
-        if not isinstance(data, list):
-            raise NexusError("unexpected games index payload")
-        try:
-            self.cache_file.write_text(json.dumps(data))
-        except OSError:
-            pass
-        return {g["domain_name"]: g for g in data}
-
-    def get(self, api_key: str) -> dict[str, dict]:
-        if self._index is None:
-            self._index = self._load_cached() or self._fetch(api_key)
-        return self._index
-
-    def domain_for_name(self, api_key: str, name: str) -> str | None:
-        idx = self.get(api_key)
-        norm = _normalize_name(name)
-        for entry in idx.values():
-            if _normalize_name(entry.get("name", "")) == norm:
-                return entry["domain_name"]
-        # Looser contains-match as a fallback
-        for entry in idx.values():
-            if norm and norm in _normalize_name(entry.get("name", "")):
-                return entry["domain_name"]
-        return None
-
-
-def _normalize_name(s: str) -> str:
-    return "".join(c for c in s.lower() if c.isalnum())
-
-
-# ------------------------------------------------------------- public client
+def _data(payload: Any) -> dict:
+    return payload.get("data") or {} if isinstance(payload, dict) else {}
 
 
 class NexusClient:
     def __init__(self, cache_dir: Path):
-        self._games = _GamesIndex(cache_dir)
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._domains_file = cache_dir / "nexus_domains.json"
 
-    # ---- domain resolution ---------------------------------------------
+    # ---- game domain ---------------------------------------------------
 
-    def resolve_domain(self, appid: str, game_name: str, api_key: str | None) -> str | None:
-        if str(appid) in APPID_TO_NEXUS_DOMAIN:
-            return APPID_TO_NEXUS_DOMAIN[str(appid)]
-        if api_key:
-            try:
-                return self._games.domain_for_name(api_key, game_name)
-            except NexusError:
-                return None
-        return None
-
-    # ---- search (no API key required) ----------------------------------
-
-    async def search(self, domain: str, query: str, *, api_key: str | None = None) -> list[NexusSearchHit]:
-        # GraphQL v2 — see _SEARCH_GQL comment for why we left the legacy
-        # search.nexusmods.com endpoint behind. ``api_key`` not required:
-        # the mods query is publicly readable.
-        body = json.dumps({
-            "query": _SEARCH_GQL,
-            "variables": {"q": query, "domain": domain, "count": 20},
-        }).encode("utf-8")
-
-        def _post() -> dict:
-            req = urllib.request.Request(
-                V2_GRAPHQL_URL,
-                data=body,
-                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+    def resolve_domain(self, appid: str, api_key: str | None) -> str | None:
+        cached = self._read_json(self._domains_file, {})
+        if appid in cached:
+            return cached[appid]
+        if not api_key:
+            return None
+        detected = _data(_request_json(
+            f"{V3_BASE}/vortex/detected-games",
+            api_key=api_key,
+            body={"steam": [appid], "gog": [], "epic": []},
+        )).get("games") or []
+        domain = None
+        if detected:
+            game_id = str(detected[0]["game_id"])
+            domain = next(
+                (g["domain_name"] for g in self._games_index(api_key) if str(g.get("id")) == game_id),
+                None,
             )
-            try:
-                with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=20) as resp:
-                    return json.loads(resp.read())
-            except urllib.error.HTTPError as e:
-                err_body = e.read().decode("utf-8", errors="replace")[:300]
-                raise NexusError(f"HTTP {e.code} from Nexus GraphQL: {err_body}") from e
-            except urllib.error.URLError as e:
-                raise NexusError(f"network error reaching Nexus GraphQL: {e.reason}") from e
+        cached[appid] = domain
+        self._write_json(self._domains_file, cached)
+        return domain
 
-        data = await asyncio.to_thread(_post)
-        if data.get("errors"):
-            raise NexusError(f"GraphQL error: {data['errors'][0].get('message', data['errors'])}")
-        nodes = (((data.get("data") or {}).get("mods") or {}).get("nodes")) or []
-        out: list[NexusSearchHit] = []
-        for r in nodes:
-            try:
-                out.append(NexusSearchHit(
-                    mod_id=int(r["modId"]),
-                    name=str(r.get("name") or ""),
-                    author=str(((r.get("uploader") or {}).get("name")) or ""),
-                    downloads=int(r.get("downloads") or 0),
-                    endorsements=int(r.get("endorsements") or 0),
-                    image=r.get("pictureUrl"),
-                ))
-            except (KeyError, TypeError, ValueError):
+    def _games_index(self, api_key: str) -> list[dict]:
+        path = self.cache_dir / "nexus_games.json"
+        if path.exists() and time.time() - path.stat().st_mtime < 7 * 86400:
+            games = self._read_json(path, None)
+            if isinstance(games, list):
+                return games
+        games = _request_json(GAMES_INDEX_URL, api_key=api_key)
+        if not isinstance(games, list):
+            raise NexusError("Nexus sent an unexpected games list.")
+        self._write_json(path, games)
+        return games
+
+    # ---- finding mods --------------------------------------------------
+
+    async def browse(self, domain: str, sort: str, api_key: str | None) -> list[NexusMod]:
+        if sort not in BROWSE_SORTS:
+            raise ValueError(f"unknown sort: {sort}")
+        payload = await asyncio.to_thread(
+            _request_json,
+            f"{V3_BASE}/mods/search",
+            api_key=api_key,
+            body={
+                "filters": {"games": [domain], "include_adult": False, "time_range": BROWSE_SORTS[sort]},
+                "sort": {"field": sort},
+                "pagination": {"page_size": 100},
+            },
+        )
+        return [
+            NexusMod(
+                mod_id=int(m["game_scoped_id"]),
+                name=m.get("name") or "",
+                summary=m.get("summary") or "",
+                author=(m.get("author") or {}).get("name") or "",
+                downloads=int(m.get("downloads") or 0),
+                endorsements=int(m.get("endorsements") or 0),
+                image=m.get("thumbnail_url"),
+                updated_at=m.get("updated_at") or "",
+            )
+            for m in _data(payload).get("mods") or []
+        ]
+
+    async def search(self, domain: str, query: str) -> list[NexusMod]:
+        payload = await asyncio.to_thread(
+            _request_json,
+            V2_GRAPHQL_URL,
+            body={"query": _SEARCH_GQL, "variables": {"q": query, "domain": domain, "count": 100}},
+        )
+        if payload.get("errors"):
+            raise NexusError(f"Nexus search failed: {payload['errors'][0].get('message')}")
+        return [
+            NexusMod(
+                mod_id=int(m["modId"]),
+                name=m.get("name") or "",
+                summary=m.get("summary") or "",
+                author=(m.get("uploader") or {}).get("name") or "",
+                downloads=int(m.get("downloads") or 0),
+                endorsements=int(m.get("endorsements") or 0),
+                image=m.get("thumbnailUrl"),
+                updated_at=m.get("updatedAt") or "",
+            )
+            for m in ((payload.get("data") or {}).get("mods") or {}).get("nodes") or []
+        ]
+
+    # ---- files ---------------------------------------------------------
+
+    async def mod_files(self, domain: str, mod_id: int, api_key: str) -> list[NexusFile]:
+        """The newest version of each file on the mod page, main files first."""
+        mod = _data(await asyncio.to_thread(
+            _request_json, f"{V3_BASE}/games/{domain}/mods/{mod_id}", api_key=api_key,
+        ))
+        files = _data(await asyncio.to_thread(
+            _request_json, f"{V3_BASE}/mods/{mod['id']}/files", api_key=api_key,
+        )).get("mod_files") or []
+        active = [f for f in files if f.get("is_active")]
+        version_lists = await asyncio.gather(*(
+            asyncio.to_thread(_request_json, f"{V3_BASE}/mod-files/{f['id']}/versions", api_key=api_key)
+            for f in active
+        ))
+        out: list[NexusFile] = []
+        for payload in version_lists:
+            versions = [
+                v for v in _data(payload).get("versions") or []
+                if v.get("category") not in _HIDDEN_FILE_CATEGORIES
+            ]
+            if not versions:
                 continue
-        return out
-
-    async def trending(self, domain: str, api_key: str) -> list[dict]:
-        url = f"{V1_BASE}/games/{domain}/mods/trending.json"
-        data = await asyncio.to_thread(_request_json, url, headers={"apikey": api_key})
-        return data if isinstance(data, list) else []
-
-    async def latest_added(self, domain: str, api_key: str) -> list[dict]:
-        url = f"{V1_BASE}/games/{domain}/mods/latest_added.json"
-        data = await asyncio.to_thread(_request_json, url, headers={"apikey": api_key})
-        return data if isinstance(data, list) else []
-
-    # ---- mod / file info (API key required) ----------------------------
-
-    async def mod_info(self, domain: str, mod_id: int, api_key: str) -> dict:
-        url = f"{V1_BASE}/games/{domain}/mods/{mod_id}.json"
-        return await asyncio.to_thread(_request_json, url, headers={"apikey": api_key})
-
-    async def mod_files(self, domain: str, mod_id: int, api_key: str) -> list[NexusModFile]:
-        url = f"{V1_BASE}/games/{domain}/mods/{mod_id}/files.json"
-        data = await asyncio.to_thread(_request_json, url, headers={"apikey": api_key})
-        files = data.get("files") if isinstance(data, dict) else []
-        out: list[NexusModFile] = []
-        for f in files or []:
-            try:
-                out.append(NexusModFile(
-                    file_id=int(f["file_id"]),
-                    name=str(f.get("name") or ""),
-                    version=str(f.get("version") or ""),
-                    size_kb=int(f.get("size_kb") or f.get("size") or 0),
-                    category=str(f.get("category_name") or ""),
-                    is_primary=bool(f.get("is_primary")),
-                ))
-            except (KeyError, TypeError, ValueError):
-                continue
+            latest = max(versions, key=lambda v: float(v.get("position") or 0))
+            out.append(NexusFile(
+                file_id=int(latest["game_scoped_id"]),
+                name=latest.get("name") or "",
+                version=latest.get("version") or "",
+                category=latest.get("category") or "",
+                is_primary=bool(latest.get("is_primary")),
+            ))
+        order = {"main": 0, "update": 1, "optional": 2}
+        out.sort(key=lambda f: (not f.is_primary, order.get(f.category, 3), f.name.lower()))
         return out
 
     async def download_link(
         self,
         domain: str,
-        mod_id: int,
         file_id: int,
         api_key: str,
         *,
-        nxm_key: str | None = None,
-        nxm_expires: int | None = None,
+        key: str | None = None,
+        expires: int | None = None,
     ) -> str:
-        """Return a direct CDN URL for a mod file.
+        qs = f"?{urllib.parse.urlencode({'key': key, 'expires': expires})}" if key and expires else ""
+        payload = await asyncio.to_thread(
+            _request_json,
+            f"{V3_BASE}/games/{domain}/mod-file-versions/{file_id}/download-link{qs}",
+            api_key=api_key,
+        )
+        links = _data(payload).get("links") or []
+        if not links:
+            raise NexusError("Nexus returned no download link.")
+        return links[0]["url"]
 
-        Premium users get a link with no extra params. Free users must supply
-        the ``key`` / ``expires`` pair from a clicked NXM://... link.
-        """
-        params: dict[str, str] = {}
-        if nxm_key:
-            params["key"] = nxm_key
-        if nxm_expires:
-            params["expires"] = str(nxm_expires)
-        qs = ("?" + urllib.parse.urlencode(params)) if params else ""
-        url = f"{V1_BASE}/games/{domain}/mods/{mod_id}/files/{file_id}/download_link.json{qs}"
-        data = await asyncio.to_thread(_request_json, url, headers={"apikey": api_key})
-        if not isinstance(data, list) or not data:
-            raise NexusError("no download link returned")
-        link = data[0].get("URI")
-        if not link:
-            raise NexusError("download link missing URI")
-        return link
-
-    # ---- raw file download ---------------------------------------------
-
-    async def download_to(self, url: str, dest: Path) -> Path:
-        # Nexus's CDN returns URLs with raw spaces in the filename portion
-        # (e.g. ``/cdn/.../AutoLoot All-in-One NG Update_…zip?…``). Python's
-        # urllib rejects URLs containing ANY characters it considers control
-        # chars (incl. space) with "URL can't contain control characters".
-        # Re-encode the path so the request goes through unmangled; the
-        # CDN expects %20 for spaces, which is the same byte sequence on
-        # the wire as what most other HTTP clients would auto-escape.
-        safe_url = _percent_encode_path(url)
-
+    async def download_to(self, url: str, dest: Path, on_progress: Callable[[float], None] | None = None) -> Path:
         def _do() -> Path:
-            req = urllib.request.Request(safe_url, headers={"User-Agent": USER_AGENT})
+            req = urllib.request.Request(_percent_encode_path(url), headers={"User-Agent": USER_AGENT})
             dest.parent.mkdir(parents=True, exist_ok=True)
-            with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=120) as resp, dest.open("wb") as fh:
-                while True:
-                    chunk = resp.read(64 * 1024)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
+            try:
+                with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=120) as resp, dest.open("wb") as fh:
+                    total = int(resp.headers.get("Content-Length") or 0)
+                    done = 0
+                    while chunk := resp.read(256 * 1024):
+                        fh.write(chunk)
+                        done += len(chunk)
+                        if total and on_progress:
+                            on_progress(done / total)
+            except (urllib.error.URLError, OSError) as e:
+                dest.unlink(missing_ok=True)
+                raise NexusError(f"Download failed: {e}") from e
             return dest
         return await asyncio.to_thread(_do)
 
-    # ---- internals -----------------------------------------------------
+    # ---- cache helpers -------------------------------------------------
 
-    async def _domain_to_numeric_id(self, domain: str, api_key: str | None) -> int | None:
-        if not api_key:
-            return None
-        def _do() -> int | None:
-            idx = self._games.get(api_key)
-            entry = idx.get(domain)
-            if entry and "id" in entry:
-                try:
-                    return int(entry["id"])
-                except (TypeError, ValueError):
-                    return None
-            return None
-        return await asyncio.to_thread(_do)
+    @staticmethod
+    def _read_json(path: Path, default: Any) -> Any:
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return default
+
+    @staticmethod
+    def _write_json(path: Path, value: Any) -> None:
+        try:
+            path.write_text(json.dumps(value))
+        except OSError:
+            pass
