@@ -45,7 +45,11 @@ import {
   uninstallMod,
 } from "./api";
 
-const errText = (e: any) => String(e?.message ?? e);
+// Decky backend errors carry an empty message; the text is the last traceback line.
+const errText = (e: any) =>
+  e?.message ||
+  e?.pythonTraceback?.trim().split("\n").pop().replace(/^[\w.]+: /, "") ||
+  String(e);
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
   state = { err: null as Error | null };
@@ -110,16 +114,16 @@ function Pills<T extends string>({
   onChange: (v: T) => void;
 }) {
   return (
-    <Focusable style={{ display: "flex", gap: 6, flexWrap: "wrap" }} flow-children="horizontal">
+    <Focusable style={{ display: "flex", gap: 4, flexWrap: "wrap" }} flow-children="horizontal">
       {options.map(([id, label]) => (
         <Focusable
           key={id}
           onActivate={() => onChange(id)}
           onClick={() => onChange(id)}
           style={{
-            padding: "6px 12px",
+            padding: "6px 10px",
             borderRadius: 16,
-            fontSize: 14,
+            fontSize: 13,
             background: value === id ? "#1a9fff" : "#ffffff1a",
             color: value === id ? "#fff" : "#dcdedf",
           }}

@@ -356,15 +356,31 @@ class ModManager:
 # ---------------------------------------------------------------- utilities
 
 
-def _extract_archive(archive: Path, dest: Path) -> None:
+def _archive_kind(archive: Path) -> str:
+    """Nexus CDN files can have no extension, so check the file header first."""
+    with archive.open("rb") as f:
+        head = f.read(8)
+    if head.startswith(b"PK"):
+        return "zip"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return "7z"
+    if head.startswith(b"Rar!"):
+        return "rar"
+    if tarfile.is_tarfile(archive):
+        return "tar"
     name = archive.name.lower()
-    if name.endswith(".zip"):
+    return next((k for k in ("zip", "7z", "rar") if name.endswith("." + k)), "")
+
+
+def _extract_archive(archive: Path, dest: Path) -> None:
+    kind = _archive_kind(archive)
+    if kind == "zip":
         with zipfile.ZipFile(archive) as zf:
             zf.extractall(dest)
-    elif name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
+    elif kind == "tar":
         with tarfile.open(archive) as tf:
             tf.extractall(dest)
-    elif name.endswith(".7z"):
+    elif kind == "7z":
         _extract_via_python_or_subprocess(
             archive, dest,
             py_module="py7zr",
@@ -372,7 +388,7 @@ def _extract_archive(archive: Path, dest: Path) -> None:
             cli_bins=("7z", "7zz", "7za", "7zr"),
             cli_args=("x", "-y", "-o{dest}", "{archive}"),
         )
-    elif name.endswith(".rar"):
+    elif kind == "rar":
         _extract_via_python_or_subprocess(
             archive, dest,
             py_module="rarfile",
