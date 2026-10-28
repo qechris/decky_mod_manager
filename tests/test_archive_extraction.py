@@ -93,5 +93,20 @@ class NoExtensionTests(unittest.TestCase):
             self.assertEqual((Path(td) / "out" / "a" / "b.txt").read_text(), "hi")
 
 
+class TarTraversalTests(unittest.TestCase):
+    def test_rejects_paths_outside_dest(self) -> None:
+        import io
+        import tarfile
+        with TemporaryDirectory() as td:
+            archive = Path(td) / "evil.tar"
+            with tarfile.open(archive, "w") as tf:
+                info = tarfile.TarInfo("../escaped.txt")
+                info.size = 2
+                tf.addfile(info, io.BytesIO(b"hi"))
+            with self.assertRaises(Exception):
+                _extract_archive(archive, Path(td) / "out")
+            self.assertFalse((Path(td) / "escaped.txt").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

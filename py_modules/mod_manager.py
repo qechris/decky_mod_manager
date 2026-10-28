@@ -379,7 +379,7 @@ def _extract_archive(archive: Path, dest: Path) -> None:
             zf.extractall(dest)
     elif kind == "tar":
         with tarfile.open(archive) as tf:
-            tf.extractall(dest)
+            _safe_tar_extract(tf, dest)
     elif kind == "7z":
         _extract_via_python_or_subprocess(
             archive, dest,
@@ -398,6 +398,20 @@ def _extract_archive(archive: Path, dest: Path) -> None:
         )
     else:
         raise ValueError(f"unsupported archive format: {archive.name}")
+
+
+def _safe_tar_extract(tf: tarfile.TarFile, dest: Path) -> None:
+    """Mod archives are untrusted: refuse paths or links that leave ``dest``."""
+    if hasattr(tarfile, "data_filter"):
+        tf.extractall(dest, filter="data")
+        return
+    root = dest.resolve()
+    for m in tf.getmembers():
+        target = (dest / m.name).resolve()
+        link = (target.parent / m.linkname).resolve() if m.issym() or m.islnk() else target
+        if not (target.is_relative_to(root) and link.is_relative_to(root)) or m.isdev():
+            raise ValueError(f"unsafe path in archive: {m.name}")
+    tf.extractall(dest)
 
 
 def _extract_via_python_or_subprocess(
