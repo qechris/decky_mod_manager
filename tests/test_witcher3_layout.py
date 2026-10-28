@@ -89,6 +89,11 @@ class LayoutNormalizerTests(unittest.TestCase):
             self.assertNotIn("content/content/", f)
 
     # Case C — folder without `mod` prefix that has content/ inside
+    def test_capitalised_content_dir_is_a_mod_folder(self) -> None:
+        _touch(self.root / "modAutoLoot" / "Content" / "Scripts" / "x.ws", "ok")
+        self.h.post_install_payload(self.root)
+        self.assertEqual(_all_files(self.root), {"Mods/modAutoLoot/Content/Scripts/x.ws"})
+
     def test_unprefixed_mod_folder_gets_prefix(self) -> None:
         _touch(self.root / "Foo" / "content" / "scripts" / "x.ws", "ok")
         self.h.post_install_payload(self.root)

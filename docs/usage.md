@@ -18,32 +18,37 @@ detected. Proton runtimes and SteamLinuxRuntime variants are filtered
 out automatically. Games with installed mods show a count like
 "1/2 mods enabled" under the name.
 
-Tap a game to open its detail page.
+Tap a game to open its detail page. The **←** pill takes you back.
 
 ## Game detail page
 
 Three tabs:
-- **Mods** — installed mods, toggle on/off, uninstall
-- **Nexus** — search Nexus and install directly
-- **Tools** — game-specific tools (only appears for games with custom handlers, e.g. W3 + KCD)
+- **Mods** — installed mods, turn on/off, remove
+- **Get mods** — browse or search Nexus and install directly
+- **Tools** — game-specific tools (only appears for games that have them, e.g. W3)
 
 ## Installing a mod
 
 ### From Nexus
 
-1. **Nexus** tab → type your search → tap **Search** (or press Enter on the OSK).
-2. Tap a result → file picker modal opens.
-3. Pick a file variant (MAIN, OPTIONAL, etc.) → tap **Install**.
-4. The mod downloads, extracts, and appears in the **Mods** tab —
-   disabled by default.
-5. Toggle it on.
+1. **Get mods** tab → pick **Trending**, **Popular**, **New** or
+   **Updated**, or type a search and tap **Search**.
+2. Tap a result → its files are listed, the recommended one first.
+3. Pick a file → tap **Install**.
+4. The mod downloads, extracts, and appears in the **Mods** tab, off.
+5. Turn it on.
+
+Free Nexus accounts: Nexus only lets premium accounts download straight
+from the API. If you're on a free account, the install window asks for
+an `nxm://` link. On the mod's Nexus page, press **Mod manager download**,
+copy the `nxm://` link, and paste it in.
 
 ### From a local archive
 
 1. Drop a `.zip`/`.7z`/`.rar`/`.tar.*` archive somewhere on your Deck
    (e.g. `~/Downloads`).
-2. **Mods** tab → **Install from file** → paste the absolute path → **Install**.
-3. Toggle on.
+2. **Mods** tab → **Install from file** → pick the archive.
+3. Turn it on.
 
 ## Enabling / disabling
 
@@ -58,10 +63,13 @@ a mod, no issue.
 
 ## Uninstalling
 
-Mod row → **Uninstall**. If the mod was enabled, it's disabled first.
-Library payload and backup dir are deleted. Free Nexus downloads remain
-cached at `~/.local/share/decky-mod-manager/cache/` — clear by hand if
-you're tight on space.
+Mod row → trash button. If the mod was on, it's turned off first.
+Library payload and backup dir are deleted. Downloaded archives are
+deleted right after install.
+
+If two mods ship the same file, the one turned on last wins. Turning it
+off brings back the other mod's file; turning both off brings back the
+game's own file.
 
 ## Per-game tools
 
@@ -90,7 +98,7 @@ the [KCD guide]({% link games/kingdom_come.md %}).
 ├── library/<game_id>/<mod_id>/      # extracted mod payloads (sources)
 ├── backups/<game_id>/<mod_id>/      # vanilla files displaced when you enabled
 ├── baselines/<game_id>/<rel>/       # baseline snapshots used by settings merger
-├── cache/                           # downloaded Nexus archives
+├── cache/                           # Nexus game list cache
 └── tools/                           # third-party tools (Script Merger etc.)
 ```
 

@@ -1,16 +1,21 @@
 import {
   ButtonItem,
   ConfirmModal,
+  DialogButton,
+  Field,
   Focusable,
   PanelSection,
   PanelSectionRow,
   TextField,
-  ToggleField,
+  Toggle,
   showModal,
 } from "@decky/ui";
-import { definePlugin } from "@decky/api";
-import { Component, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { FaPuzzlePiece, FaSync, FaTrash, FaPlus, FaTools, FaSearch } from "react-icons/fa";
+import { type FileSelectionType, definePlugin, openFilePicker, toaster } from "@decky/api";
+
+// Ambient const enum; isolatedModules can't inline it.
+const PICK_FILE = 0 as FileSelectionType;
+import { Component, ReactNode, useEffect, useMemo, useState } from "react";
+import { FaArrowLeft, FaFolderOpen, FaPuzzlePiece, FaSearch, FaSync, FaTrash } from "react-icons/fa";
 import {
   disableMod,
   enableMod,
@@ -22,59 +27,54 @@ import {
   listGames,
   listMods,
   Mod,
-  NexusModFile,
-  NexusSearchHit,
+  modsSettingsPath,
+  NexusFile,
+  NexusInstallResult,
+  NexusMod,
+  NexusSort,
+  nexusBrowse,
   nexusInstall,
+  nexusInstallNxm,
   nexusModFiles,
   nexusSearch,
-  NativeMergerResult,
-  ModsSettingsPathInfo,
-  modsSettingsPath,
   removeMerged,
-  RemoveMergedResult,
   scriptMerger,
   scriptMergerNative,
-  ScriptMergerStatus,
   setNexusApiKey,
-  SettingsMergerResult,
   settingsMergerNative,
-  SettingsView,
   uninstallMod,
 } from "./api";
 
-// ------------------------------------------------------------ error boundary
+const errText = (e: any) => String(e?.message ?? e);
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
   state = { err: null as Error | null };
   static getDerivedStateFromError(err: Error) {
     return { err };
   }
-  componentDidCatch(err: Error, info: unknown) {
-    console.error("[mod-manager] render error", err, info);
-  }
   render() {
-    if (this.state.err) {
-      return (
-        <PanelSection title="Mod Manager — error">
-          <PanelSectionRow>
-            <div style={{ color: "#ff6b6b", fontFamily: "monospace", fontSize: 14, whiteSpace: "pre-wrap" }}>
-              {String(this.state.err?.message ?? this.state.err)}
-            </div>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => this.setState({ err: null })}>
-              Retry
-            </ButtonItem>
-          </PanelSectionRow>
-        </PanelSection>
-      );
-    }
-    return this.props.children;
+    if (!this.state.err) return this.props.children;
+    return (
+      <PanelSection title="Something went wrong">
+        <PanelSectionRow><ErrorText text={errText(this.state.err)} /></PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => this.setState({ err: null })}>Try again</ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+    );
   }
 }
 
-function Loading({ label = "Loading..." }: { label?: string }) {
-  return <div style={{ opacity: 0.85, fontSize: 14, padding: "4px 0" }}>{label}</div>;
+function Note({ children }: { children: ReactNode }) {
+  return <div style={{ fontSize: 14, opacity: 0.8, lineHeight: 1.4 }}>{children}</div>;
+}
+
+function ErrorText({ text }: { text: string }) {
+  return <div style={{ fontSize: 14, color: "#ff8080", wordBreak: "break-word" }}>{text}</div>;
+}
+
+function Row({ children }: { children: ReactNode }) {
+  return <PanelSectionRow>{children}</PanelSectionRow>;
 }
 
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
@@ -88,876 +88,553 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
     setLoading(true);
     setError(null);
     fn()
-      .then((v) => { if (!cancelled) setData(v); })
-      .catch((e) => { if (!cancelled) setError(String(e?.message ?? e)); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .then((v) => !cancelled && setData(v))
+      .catch((e) => !cancelled && setError(errText(e)))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nonce]);
 
   return { data, loading, error, reload: () => setNonce((n) => n + 1) };
 }
 
-// ------------------------------------------------------------ install modal
-
-function InstallLocalModal({
-  game,
-  closeModal,
-  onInstalled,
+function Pills<T extends string>({
+  options,
+  value,
+  onChange,
 }: {
-  game: Game;
-  closeModal?: () => void;
-  onInstalled: () => void;
+  options: [T, ReactNode][];
+  value: T;
+  onChange: (v: T) => void;
 }) {
-  const [path, setPath] = useState("");
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const submit = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      await installMod(game.id, path.trim(), name.trim() || null);
-      onInstalled();
-      closeModal?.();
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
-    <ConfirmModal
-      strTitle={`Install mod for ${game.name}`}
-      strOKButtonText={busy ? "Installing..." : "Install"}
-      strCancelButtonText="Cancel"
-      bOKDisabled={busy || !path.trim()}
-      onOK={submit}
-      onCancel={closeModal}
-    >
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <TextField
-          label="Archive path"
-          description="Absolute path to a .zip, .7z, .rar, or .tar.* mod archive"
-          {...({ placeholder: "/home/deck/Downloads/mod.zip" } as any)}
-          bShowClearAction
-          value={path}
-          onChange={(e) => setPath(e.target.value)}
-        />
-        <TextField
-          label="Display name (optional)"
-          {...({ placeholder: "Defaults to the archive filename" } as any)}
-          bShowClearAction
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-        {err && <div style={{ color: "#ff6b6b", fontSize: 14 }}>{err}</div>}
-      </div>
-    </ConfirmModal>
+    <Focusable style={{ display: "flex", gap: 6, flexWrap: "wrap" }} flow-children="horizontal">
+      {options.map(([id, label]) => (
+        <Focusable
+          key={id}
+          onActivate={() => onChange(id)}
+          onClick={() => onChange(id)}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 16,
+            fontSize: 14,
+            background: value === id ? "#1a9fff" : "#ffffff1a",
+            color: value === id ? "#fff" : "#dcdedf",
+          }}
+        >
+          {label}
+        </Focusable>
+      ))}
+    </Focusable>
   );
 }
 
-// ------------------------------------------------------------ nexus install modal
-
-function NexusInstallModal({
-  game,
-  hit,
-  closeModal,
-  onInstalled,
-}: {
-  game: Game;
-  hit: NexusSearchHit;
-  closeModal?: () => void;
-  onInstalled: () => void;
-}) {
-  const { data: files, loading, error } = useAsync(
-    () => nexusModFiles(game.id, hit.mod_id),
-    [game.id, hit.mod_id],
-  );
-  const [selected, setSelected] = useState<NexusModFile | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (files && !selected) {
-      const primary = files.find((f) => f.is_primary) ?? files[0];
-      if (primary) setSelected(primary);
-    }
-  }, [files, selected]);
-
-  const submit = async () => {
-    if (!selected) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await nexusInstall(game.id, hit.mod_id, selected.file_id, hit.name, null, null);
-      onInstalled();
-      closeModal?.();
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <ConfirmModal
-      strTitle={`Install "${hit.name}" from Nexus`}
-      strOKButtonText={busy ? "Downloading..." : "Install"}
-      strCancelButtonText="Cancel"
-      bOKDisabled={busy || !selected}
-      onOK={submit}
-      onCancel={closeModal}
-    >
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ fontSize: 14, opacity: 0.85 }}>
-          by {hit.author} · {hit.downloads.toLocaleString()} downloads · {hit.endorsements.toLocaleString()} endorsements
-        </div>
-        {loading && <Loading label="Loading file list..." />}
-        {error && <div style={{ color: "#ff6b6b", fontSize: 14 }}>{error}</div>}
-        {files?.map((f) => (
-          <Focusable
-            key={f.file_id}
-            onActivate={() => setSelected(f)}
-            style={{
-              padding: 8,
-              border: "1px solid #444",
-              borderColor: selected?.file_id === f.file_id ? "#67c4ff" : "#444",
-              borderRadius: 4,
-              cursor: "pointer",
-              // Keep Decky's default focus outline so controller users can
-              // see which file is selected without relying on the border alone.
-            }}
-          >
-            <div style={{ fontSize: 14 }}>{f.name}</div>
-            <div style={{ fontSize: 13, opacity: 0.85 }}>
-              {f.category} · v{f.version || "?"} · {(f.size_kb / 1024).toFixed(1)} MB
-              {f.is_primary && " · MAIN"}
-            </div>
-          </Focusable>
-        ))}
-        {err && <div style={{ color: "#ff6b6b", fontSize: 14 }}>{err}</div>}
-        <div style={{ fontSize: 13, opacity: 0.85, marginTop: 6 }}>
-          Free Nexus accounts: if download fails with a "key required" error,
-          you need to click an NXM:// link from the mod's page in a browser.
-          Premium accounts can download directly.
-        </div>
-      </div>
-    </ConfirmModal>
-  );
+function installed(mod: Mod) {
+  toaster.toast({ title: "Mod installed", body: `${mod.name}. Turn it on in Mods.` });
 }
 
-// ------------------------------------------------------------ tabs: local mods
+// ------------------------------------------------------------ mods
 
-function LocalModsTab({ game, onChange }: { game: Game; onChange: () => void }) {
+function ModsTab({ game }: { game: Game }) {
   const { data: mods, loading, error, reload } = useAsync(() => listMods(game.id), [game.id]);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const openInstall = useCallback(() => {
-    showModal(
-      <InstallLocalModal
-        game={game}
-        onInstalled={() => {
-          reload();
-          onChange();
-        }}
-      />,
-    );
-  }, [game, reload, onChange]);
+  const installFile = async () => {
+    setErr(null);
+    try {
+      const picked = await openFilePicker(
+        PICK_FILE,
+        "/home/deck/Downloads",
+        true,
+        true,
+        undefined,
+        ["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz"],
+      );
+      setBusy(true);
+      installed(await installMod(game.id, picked.realpath, null));
+      reload();
+    } catch (e) {
+      if (e) setErr(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <PanelSection title="Installed mods">
-      <PanelSectionRow>
-        <ButtonItem layout="below" onClick={openInstall}>
-          <FaPlus style={{ marginRight: 6 }} /> Install from file
+      <Row>
+        <ButtonItem layout="below" onClick={installFile} disabled={busy}>
+          <FaFolderOpen style={{ marginRight: 8 }} />
+          {busy ? "Installing..." : "Install from file"}
         </ButtonItem>
-      </PanelSectionRow>
-      {loading && <PanelSectionRow><Loading /></PanelSectionRow>}
-      {error && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 14 }}>{error}</div></PanelSectionRow>}
-      {!loading && mods && mods.length === 0 && (
-        <PanelSectionRow>
-          <div style={{ fontSize: 14, opacity: 0.85 }}>
-            No mods installed yet. Try the <b>Nexus</b> tab to browse, or
-            <b> Install from file</b> if you've already downloaded an archive.
-          </div>
-        </PanelSectionRow>
+      </Row>
+      {err && <Row><ErrorText text={err} /></Row>}
+      {loading && !mods && <Row><Note>Loading...</Note></Row>}
+      {error && <Row><ErrorText text={error} /></Row>}
+      {mods?.length === 0 && (
+        <Row><Note>No mods yet. Find some in Get mods, or install a downloaded file.</Note></Row>
       )}
-      {mods?.map((mod) => (
-        <ModRow key={mod.id} mod={mod} game={game} onChange={() => { reload(); onChange(); }} />
-      ))}
+      {mods?.map((mod) => <ModRow key={mod.id} mod={mod} game={game} onChange={reload} />)}
     </PanelSection>
   );
 }
 
 function ModRow({ mod, game, onChange }: { mod: Mod; game: Game; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  const toggle = async (next: boolean) => {
+  const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
+    setErr(null);
     try {
-      if (next) await enableMod(game.id, mod.id);
-      else await disableMod(game.id, mod.id);
+      await fn();
       onChange();
     } catch (e) {
-      console.error("[mod-manager] toggle failed", e);
+      setErr(errText(e));
     } finally {
       setBusy(false);
     }
   };
 
-  const remove = () => {
+  const remove = () =>
     showModal(
       <ConfirmModal
-        strTitle={`Uninstall ${mod.name}?`}
-        strDescription="Removes the mod files and restores any backed-up vanilla files."
-        strOKButtonText="Uninstall"
-        onOK={async () => {
-          setBusy(true);
-          try {
-            await uninstallMod(game.id, mod.id);
-            onChange();
-          } finally {
-            setBusy(false);
-          }
-        }}
+        strTitle={`Remove ${mod.name}?`}
+        strDescription="This deletes the mod and puts back any game files it replaced."
+        strOKButtonText="Remove"
+        onOK={() => run(() => uninstallMod(game.id, mod.id))}
       />,
     );
-  };
 
   return (
-    <>
-      <PanelSectionRow>
-        <ToggleField
-          label={mod.name + (mod.source === "nexus" ? "  ↗ Nexus" : "")}
-          description={
-            busy
-              ? "Working..."
-              : mod.enabled
-                ? `Enabled · ${mod.files.length} file(s)`
-                : "Disabled"
-          }
-          checked={mod.enabled}
-          disabled={busy}
-          onChange={toggle}
-        />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem layout="below" onClick={remove} disabled={busy}>
-          <FaTrash style={{ marginRight: 6 }} /> Uninstall
-        </ButtonItem>
-      </PanelSectionRow>
-    </>
+    <Row>
+      <Field
+        label={mod.name}
+        description={err ? <ErrorText text={err} /> : busy ? "Working..." : mod.enabled ? "On" : "Off"}
+        childrenLayout="inline"
+        bottomSeparator="standard"
+      >
+        <Focusable style={{ display: "flex", gap: 8, alignItems: "center" }} flow-children="horizontal">
+          <Toggle
+            value={mod.enabled}
+            disabled={busy}
+            onChange={(on) => run(() => (on ? enableMod : disableMod)(game.id, mod.id))}
+          />
+          <DialogButton
+            onClick={remove}
+            disabled={busy}
+            style={{ minWidth: 0, width: 40, height: 32, padding: 0 }}
+          >
+            <FaTrash />
+          </DialogButton>
+        </Focusable>
+      </Field>
+    </Row>
   );
 }
 
-// ------------------------------------------------------------ tabs: nexus
+// ------------------------------------------------------------ nexus
 
-function NexusTab({ game, onChange }: { game: Game; onChange: () => void }) {
+function NexusTab({ game, hasKey }: { game: Game; hasKey: boolean }) {
+  const [sort, setSort] = useState<NexusSort>("trending");
   const [query, setQuery] = useState("");
-  const [submitted, setSubmitted] = useState("");
-  const { data: hits, loading, error, reload } = useAsync(
-    () => (submitted ? nexusSearch(game.id, submitted) : Promise.resolve([] as NexusSearchHit[])),
-    [game.id, submitted],
+  const [searched, setSearched] = useState("");
+  const { data: hits, loading, error } = useAsync(
+    () => (searched ? nexusSearch(game.id, searched) : nexusBrowse(game.id, sort)),
+    [game.id, sort, searched],
   );
 
-  const submit = useCallback(() => {
-    const trimmed = query.trim();
-    if (trimmed) setSubmitted(trimmed);
-  }, [query]);
-
-  const openHit = (hit: NexusSearchHit) => {
-    showModal(
-      <NexusInstallModal game={game} hit={hit} onInstalled={() => { reload(); onChange(); }} />,
-    );
+  const search = () => setSearched(query.trim());
+  const pickSort = (s: NexusSort) => {
+    setQuery("");
+    setSearched("");
+    setSort(s);
   };
 
   return (
-    <PanelSection title="Browse Nexus">
-      <PanelSectionRow>
+    <PanelSection title="Get mods from Nexus">
+      {!hasKey && (
+        <Row><Note>Add your Nexus API key in Settings to download mods.</Note></Row>
+      )}
+      <Row>
         <TextField
           label="Search"
           value={query}
+          bShowClearAction
           onChange={(e) => setQuery(e.target.value)}
-          // On-screen keyboard "Enter" should fire the search the same way the
-          // Search button does — otherwise Deck users have to D-pad away from
-          // the input to the Search button on every query.
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              submit();
+              search();
             }
           }}
-          // Built-in clear-X button so users don't backspace 20 characters.
-          bShowClearAction
         />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        {/* Keep `disabled` derived from `loading` only, NOT from `!query.trim()` —
-            otherwise the button re-renders on every keystroke, which under Steam
-            CEF causes the QAM focus to jitter ("glitchy" feel). We handle the
-            empty-query case in `submit()` instead. */}
-        <ButtonItem layout="below" onClick={submit} disabled={loading}>
-          <FaSearch style={{ marginRight: 6 }} /> {loading ? "Searching..." : "Search"}
+      </Row>
+      <Row>
+        <ButtonItem layout="below" onClick={search}>
+          <FaSearch style={{ marginRight: 8 }} /> Search
         </ButtonItem>
-      </PanelSectionRow>
-      {loading && <PanelSectionRow><Loading label="Searching Nexus..." /></PanelSectionRow>}
-      {error && (
-        <PanelSectionRow>
-          <div
-            style={{
-              color: "#ff6b6b",
-              fontSize: 14,
-              padding: 8,
-              border: "1px solid #ff6b6b40",
-              borderRadius: 4,
-              wordBreak: "break-word",
-            }}
-          >
-            <b>Search failed:</b> {error}
-          </div>
-        </PanelSectionRow>
-      )}
-      {!loading && !error && submitted && hits && hits.length === 0 && (
-        <PanelSectionRow>
-          <div style={{ fontSize: 14, opacity: 0.85 }}>
-            No mods matched "<b>{submitted}</b>" — try a broader search term.
-          </div>
-        </PanelSectionRow>
-      )}
-      {hits?.map((hit) => (
-        <PanelSectionRow key={hit.mod_id}>
-          <ButtonItem layout="below" onClick={() => openHit(hit)}>
-            <div style={{ textAlign: "left" }}>
-              <div style={{ fontSize: 14 }}>{hit.name}</div>
-              <div style={{ fontSize: 13, opacity: 0.85 }}>
-                {hit.author} · ↓{hit.downloads.toLocaleString()} · ♥{hit.endorsements.toLocaleString()}
+      </Row>
+      <Row>
+        <Pills
+          options={[["trending", "Trending"], ["popular", "Popular"], ["new", "New"], ["updated", "Updated"]]}
+          value={searched ? ("" as NexusSort) : sort}
+          onChange={pickSort}
+        />
+      </Row>
+      {loading && <Row><Note>Loading...</Note></Row>}
+      {error && <Row><ErrorText text={error} /></Row>}
+      {!loading && !error && hits?.length === 0 && <Row><Note>Nothing found. Try other words.</Note></Row>}
+      {!loading &&
+        hits?.map((hit) => (
+          <Row key={hit.mod_id}>
+            <ButtonItem
+              layout="below"
+              disabled={!hasKey}
+              onClick={() => showModal(<NexusInstallModal game={game} hit={hit} />)}
+            >
+              <div style={{ display: "flex", gap: 10, alignItems: "center", textAlign: "left" }}>
+                {hit.image && (
+                  <img src={hit.image} style={{ width: 56, height: 40, objectFit: "cover", borderRadius: 4 }} />
+                )}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 14, whiteSpace: "normal" }}>{hit.name}</div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    {hit.author} · {hit.downloads.toLocaleString()} downloads
+                  </div>
+                </div>
               </div>
-            </div>
-          </ButtonItem>
-        </PanelSectionRow>
-      ))}
+            </ButtonItem>
+          </Row>
+        ))}
     </PanelSection>
   );
 }
 
-// ------------------------------------------------------------ tabs: w3 tools
-
-function W3ToolsTab({ game }: { game: Game }) {
-  const [status, setStatus] = useState<ScriptMergerStatus | null>(null);
-  const [native, setNative] = useState<NativeMergerResult | null>(null);
-  const [settings, setSettings] = useState<SettingsMergerResult | null>(null);
-  const [removed, setRemoved] = useState<RemoveMergedResult | null>(null);
-  const [settingsPath, setSettingsPath] = useState<ModsSettingsPathInfo | null>(null);
+function NexusInstallModal({ game, hit, closeModal }: { game: Game; hit: NexusMod; closeModal?: () => void }) {
+  const { data: files, loading, error } = useAsync(() => nexusModFiles(game.id, hit.mod_id), [hit.mod_id]);
+  const [selected, setSelected] = useState<NexusFile | null>(null);
+  const [needsNxm, setNeedsNxm] = useState(false);
+  const [nxm, setNxm] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const [s, p] = await Promise.all([
-        scriptMerger(game.id, "status"),
-        modsSettingsPath(game.id),
-      ]);
-      setStatus(s);
-      setSettingsPath(p);
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  }, [game.id]);
-
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (files && !selected) setSelected(files[0] ?? null);
+  }, [files]);
 
-  const doAction = async (action: "install" | "launch") => {
+  const submit = async () => {
     setBusy(true);
     setErr(null);
     try {
-      await scriptMerger(game.id, action);
-      await refresh();
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
-      setBusy(false);
-    }
-  };
-
-  const runNative = async () => {
-    setBusy(true);
-    setErr(null);
-    setNative(null);
-    try {
-      setNative(await scriptMergerNative(game.id));
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const runSettings = async () => {
-    setBusy(true);
-    setErr(null);
-    setSettings(null);
-    try {
-      setSettings(await settingsMergerNative(game.id));
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const doRemoveMerged = async () => {
-    setBusy(true);
-    setErr(null);
-    setRemoved(null);
-    try {
-      const r = await removeMerged(game.id);
-      setRemoved(r);
-      setNative(null);
-      setSettings(null);
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      const res: NexusInstallResult = needsNxm
+        ? await nexusInstallNxm(game.id, nxm.trim(), hit.name)
+        : await nexusInstall(game.id, hit.mod_id, selected!.file_id, hit.name);
+      if (res.needs_nxm) {
+        setNeedsNxm(true);
+        return;
+      }
+      installed(res.mod);
+      closeModal?.();
+    } catch (e) {
+      setErr(errText(e));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <>
-      <PanelSection title="Script Merger (Proton GUI)">
-        {status && (
-          <>
-            <PanelSectionRow>
-              <div style={{ fontSize: 14 }}>
-                <div>Installed: {status.installed ? "yes" : "no"}</div>
-                <div>Proton: {status.proton_path ? "found" : "not found"}</div>
-              </div>
-            </PanelSectionRow>
-            {!status.installed && (
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => doAction("install")} disabled={busy}>
-                  {busy ? "Downloading..." : "Install Script Merger"}
-                </ButtonItem>
-              </PanelSectionRow>
-            )}
-            {status.installed && (
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => doAction("launch")} disabled={busy || !status.proton_path}>
-                  {status.proton_path ? "Launch Script Merger" : "Install Proton first"}
-                </ButtonItem>
-              </PanelSectionRow>
-            )}
-          </>
-        )}
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={refresh} disabled={busy}>
-            <FaSync style={{ marginRight: 6 }} /> Re-check
-          </ButtonItem>
-        </PanelSectionRow>
-        {err && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 14 }}>{err}</div></PanelSectionRow>}
-      </PanelSection>
-
-      <PanelSection title="Native Mergers (Linux)">
-        <PanelSectionRow>
-          <div style={{ fontSize: 14, opacity: 0.85 }}>
-            Merges conflicting files from enabled mods using GNU diff3. Conflicts auto-resolve
-            to the higher-priority mod (per mods.settings).
-          </div>
-        </PanelSectionRow>
-
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={runNative} disabled={busy}>
-            <FaTools style={{ marginRight: 6 }} />
-            {busy ? "Working..." : "Merge scripts (.ws) → mod0000_DeckyMerged"}
-          </ButtonItem>
-        </PanelSectionRow>
-        {native && <MergerResultRows
-          title="Scripts"
-          mergedCount={native.merged_files.length}
-          conflicts={native.conflicts_auto_resolved}
-          skipped={native.skipped_no_vanilla}
-          skippedLabel="no vanilla baseline"
-        />}
-
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={runSettings} disabled={busy}>
-            <FaTools style={{ marginRight: 6 }} />
-            {busy ? "Working..." : "Merge settings (input.xml, userConfigDef.xml)"}
-          </ButtonItem>
-        </PanelSectionRow>
-        {settings && <MergerResultRows
-          title="Settings"
-          mergedCount={settings.merged_files.length}
-          conflicts={settings.conflicts_auto_resolved}
-          skipped={settings.skipped_no_baseline}
-          skippedLabel="no baseline could be captured"
-        />}
-
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={doRemoveMerged} disabled={busy}>
-            <FaTrash style={{ marginRight: 6 }} />
-            {busy ? "Working..." : "Remove merged outputs (restore baselines)"}
-          </ButtonItem>
-        </PanelSectionRow>
-        {removed && (
-          <PanelSectionRow>
-            <div style={{ fontSize: 14 }}>
-              {removed.removed_merged_script_mod
-                ? "Removed mod0000_DeckyMerged."
-                : "No merged script mod to remove."}
-              {removed.restored_settings_files.length > 0 &&
-                ` Restored ${removed.restored_settings_files.length} settings file(s) from baseline.`}
-            </div>
-          </PanelSectionRow>
-        )}
-      </PanelSection>
-
-      <PanelSection title="Diagnostics">
-        <PanelSectionRow>
-          <div style={{ fontSize: 14 }}>
-            Install path
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>
-            {game.install_path}
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <div style={{ fontSize: 14, marginTop: 6 }}>
-            Script Merger (Proton GUI) path
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>
-            {status?.exe_path || "not installed"}
-          </div>
-        </PanelSectionRow>
-        {status?.proton_path && (
-          <>
-            <PanelSectionRow>
-              <div style={{ fontSize: 14, marginTop: 6 }}>Proton path</div>
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>
-                {status.proton_path}
-              </div>
-            </PanelSectionRow>
-          </>
-        )}
-        <PanelSectionRow>
-          <div style={{ fontSize: 14, marginTop: 6 }}>
-            mods.settings →{" "}
-            {settingsPath ? (
-              <span style={{ color: settingsPath.exists ? "#8aff8a" : "#ffb86c" }}>
-                {settingsPath.exists ? "found" : "will be created"}
-              </span>
-            ) : (
-              "checking..."
-            )}
-          </div>
-        </PanelSectionRow>
-        {settingsPath && (
-          <>
-            <PanelSectionRow>
-              <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>
-                {settingsPath.path}
-              </div>
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <div style={{ fontSize: 13, opacity: 0.85 }}>
-                {settingsPath.using_prefix_documents
-                  ? "Using Proton prefix Documents (the game reads this)."
-                  : "Fallback: install Mods/ — the game probably won't read this."}
-              </div>
-            </PanelSectionRow>
-          </>
-        )}
-      </PanelSection>
-    </>
-  );
-}
-
-function MergerResultRows({
-  title,
-  mergedCount,
-  conflicts,
-  skipped,
-  skippedLabel,
-}: {
-  title: string;
-  mergedCount: number;
-  conflicts: string[];
-  skipped: string[];
-  skippedLabel: string;
-}) {
-  return (
-    <>
-      <PanelSectionRow>
-        <div style={{ fontSize: 14 }}>
-          {title}: merged <b>{mergedCount}</b> file(s).
-        </div>
-      </PanelSectionRow>
-      {conflicts.length > 0 && (
-        <PanelSectionRow>
-          <div style={{ fontSize: 14, color: "#ffb86c" }}>
-            Auto-resolved {conflicts.length} conflict(s) — kept higher-priority side.
-          </div>
-        </PanelSectionRow>
-      )}
-      {conflicts.slice(0, 6).map((f) => (
-        <PanelSectionRow key={f}>
-          <div style={{ fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>{f}</div>
-        </PanelSectionRow>
-      ))}
-      {conflicts.length > 6 && (
-        <PanelSectionRow>
-          <div style={{ fontSize: 13, opacity: 0.85 }}>
-            …and {conflicts.length - 6} more.
-          </div>
-        </PanelSectionRow>
-      )}
-      {skipped.length > 0 && (
-        <PanelSectionRow>
-          <div style={{ fontSize: 14, color: "#ff6b6b" }}>
-            Skipped {skipped.length} file(s) — {skippedLabel}.
-          </div>
-        </PanelSectionRow>
-      )}
-    </>
-  );
-}
-
-// ------------------------------------------------------------ game detail
-
-type DetailTab = "local" | "nexus" | "tools";
-
-function GameDetail({
-  game,
-  handler,
-  onBack,
-}: {
-  game: Game;
-  handler: HandlerInfo;
-  onBack: () => void;
-}) {
-  const [tab, setTab] = useState<DetailTab>("local");
-  const [bump, setBump] = useState(0);
-  const showTools = handler.tools.length > 0;
-
-  return (
-    <ErrorBoundary>
-      <PanelSection title={game.name}>
-        <PanelSectionRow>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            <TabPill label="Mods" active={tab === "local"} onClick={() => setTab("local")} />
-            <TabPill label="Nexus" active={tab === "nexus"} onClick={() => setTab("nexus")} />
-            {showTools && (
-              <TabPill label="Tools" active={tab === "tools"} onClick={() => setTab("tools")} />
-            )}
-          </div>
-        </PanelSectionRow>
-        {/* No "Back to games" button — the header's back arrow handles that.
-            No install_path / handler info either — both live in the Tools →
-            Diagnostics panel where they belong. */}
-      </PanelSection>
-
-      {tab === "local" && <LocalModsTab key={bump} game={game} onChange={() => setBump((b) => b + 1)} />}
-      {tab === "nexus" && <NexusTab game={game} onChange={() => setBump((b) => b + 1)} />}
-      {tab === "tools" && showTools && <W3ToolsTab game={game} />}
-    </ErrorBoundary>
-  );
-}
-
-function TabPill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  // Focusable makes this D-pad reachable and A-button activatable in
-  // Steam Deck Gaming Mode. A bare <div onClick> would only work for
-  // touchscreen/mouse, which the deck doesn't have in game mode.
-  return (
-    <Focusable
-      onActivate={onClick}
-      focusWithinClassName="gpfocuswithin"
-      style={{
-        padding: "8px 14px",
-        borderRadius: 16,
-        background: active ? "#67c4ff" : "#2a2a2a",
-        color: active ? "#000" : "#ddd",
-        fontSize: 14,
-        cursor: "pointer",
-        // No `outline: none` — Decky's default focus ring is the only signal
-        // controller users have for "which pill am I about to activate".
-      }}
+    <ConfirmModal
+      strTitle={hit.name}
+      strOKButtonText={busy ? "Downloading..." : "Install"}
+      bOKDisabled={busy || (needsNxm ? !nxm.trim() : !selected)}
+      onOK={submit}
+      onCancel={closeModal}
+      bHideCloseIcon
     >
-      {label}
-    </Focusable>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {hit.summary && <Note>{hit.summary}</Note>}
+        {loading && <Note>Loading files...</Note>}
+        {error && <ErrorText text={error} />}
+        {!needsNxm &&
+          files?.map((f) => (
+            <Focusable
+              key={f.file_id}
+              onActivate={() => setSelected(f)}
+              onClick={() => setSelected(f)}
+              style={{
+                padding: 10,
+                borderRadius: 4,
+                border: `2px solid ${selected?.file_id === f.file_id ? "#1a9fff" : "#ffffff1a"}`,
+              }}
+            >
+              <div style={{ fontSize: 15 }}>{f.name}</div>
+              <div style={{ fontSize: 13, opacity: 0.7 }}>
+                {[f.category, f.version && `v${f.version}`, f.is_primary && "recommended"].filter(Boolean).join(" · ")}
+              </div>
+            </Focusable>
+          ))}
+        {!loading && files?.length === 0 && <Note>This mod has no files to download.</Note>}
+        {needsNxm && (
+          <>
+            <Note>
+              Free Nexus accounts need a download link from the website. Open this mod on nexusmods.com, press
+              "Mod manager download", copy the nxm:// link, and paste it here.
+            </Note>
+            <TextField label="nxm:// link" value={nxm} bShowClearAction onChange={(e) => setNxm(e.target.value)} />
+          </>
+        )}
+        {err && <ErrorText text={err} />}
+      </div>
+    </ConfirmModal>
   );
 }
 
-// ------------------------------------------------------------ game picker
+// ------------------------------------------------------------ witcher 3 tools
 
-function GamePicker({ onPick }: { onPick: (g: Game) => void }) {
+function W3ToolsTab({ game }: { game: Game }) {
+  const { data: status, reload } = useAsync(() => scriptMerger(game.id, "status"), [game.id]);
+  const { data: settingsPath } = useAsync(() => modsSettingsPath(game.id), [game.id]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = async (label: string, fn: () => Promise<string>) => {
+    setBusy(label);
+    setMsg(null);
+    setErr(null);
+    try {
+      setMsg(await fn());
+      reload();
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const mergeScripts = () =>
+    run("scripts", async () => {
+      const r = await scriptMergerNative(game.id);
+      return `Merged ${r.merged_files.length} script(s).` + conflictNote(r.conflicts_auto_resolved.length, r.skipped_no_vanilla.length);
+    });
+  const mergeSettings = () =>
+    run("settings", async () => {
+      const r = await settingsMergerNative(game.id);
+      return `Merged ${r.merged_files.length} settings file(s).` + conflictNote(r.conflicts_auto_resolved.length, r.skipped_no_baseline.length);
+    });
+  const undo = () =>
+    run("undo", async () => {
+      const r = await removeMerged(game.id);
+      return r.removed_merged_script_mod || r.restored_settings_files.length ? "Merges removed." : "Nothing to remove.";
+    });
+
+  const button = (id: string, label: string, onClick: () => void, disabled = false) => (
+    <Row>
+      <ButtonItem layout="below" onClick={onClick} disabled={!!busy || disabled}>
+        {busy === id ? "Working..." : label}
+      </ButtonItem>
+    </Row>
+  );
+
+  return (
+    <>
+      <PanelSection title="Merge mods">
+        <Row><Note>Run this after turning mods on or off. It fixes mods that change the same files.</Note></Row>
+        {button("scripts", "Merge scripts", mergeScripts)}
+        {button("settings", "Merge settings", mergeSettings)}
+        {button("undo", "Remove merges", undo)}
+        {msg && <Row><Note>{msg}</Note></Row>}
+        {err && <Row><ErrorText text={err} /></Row>}
+      </PanelSection>
+      <PanelSection title="Script Merger app">
+        <Row>
+          <Note>
+            The Windows Script Merger, run with Proton. {status?.installed ? "Installed." : "Not installed."}
+            {status && !status.proton_path && " Proton not found."}
+          </Note>
+        </Row>
+        {status &&
+          !status.installed &&
+          button("install", "Download Script Merger", () =>
+            run("install", async () => (await scriptMerger(game.id, "install"), "Script Merger installed.")),
+          )}
+        {status?.installed &&
+          button(
+            "launch",
+            "Open Script Merger",
+            () => run("launch", async () => (await scriptMerger(game.id, "launch"), "Script Merger opened.")),
+            !status.proton_path,
+          )}
+      </PanelSection>
+      {settingsPath && (
+        <PanelSection title="Load order file">
+          <Row>
+            <div style={{ fontSize: 12, opacity: 0.7, wordBreak: "break-all" }}>{settingsPath.path}</div>
+          </Row>
+          {!settingsPath.using_prefix_documents && (
+            <Row><Note>Start the game once so Proton makes its folders, then come back.</Note></Row>
+          )}
+        </PanelSection>
+      )}
+    </>
+  );
+}
+
+function conflictNote(conflicts: number, skipped: number) {
+  return (
+    (conflicts ? ` ${conflicts} clash(es) solved by mod priority.` : "") +
+    (skipped ? ` ${skipped} skipped (no original file).` : "")
+  );
+}
+
+// ------------------------------------------------------------ game
+
+type GameTab = "mods" | "nexus" | "tools";
+
+function GameView({ game, handler, hasKey, onBack }: { game: Game; handler: HandlerInfo; hasKey: boolean; onBack: () => void }) {
+  const [tab, setTab] = useState<GameTab>("mods");
+  const tabs: [GameTab | "back", ReactNode][] = [
+    ["back", <FaArrowLeft style={{ verticalAlign: "middle" }} />],
+    ["mods", "Mods"],
+    ["nexus", "Get mods"],
+  ];
+  if (handler.tools.length) tabs.push(["tools", "Tools"]);
+
+  return (
+    <>
+      <PanelSection title={game.name}>
+        <Row>
+          <Pills options={tabs} value={tab} onChange={(t) => (t === "back" ? onBack() : setTab(t))} />
+        </Row>
+      </PanelSection>
+      {tab === "mods" && <ModsTab game={game} />}
+      {tab === "nexus" && <NexusTab game={game} hasKey={hasKey} />}
+      {tab === "tools" && <W3ToolsTab game={game} />}
+    </>
+  );
+}
+
+// ------------------------------------------------------------ games
+
+function GameList({ onPick }: { onPick: (g: Game) => void }) {
   const { data: games, loading, error, reload } = useAsync(() => listGames(), []);
   const [filter, setFilter] = useState("");
-
-  const filtered = useMemo(() => {
-    if (!games) return [];
-    const q = filter.trim().toLowerCase();
-    if (!q) return games;
-    return games.filter((g) => g.name.toLowerCase().includes(q));
-  }, [games, filter]);
+  const shown = useMemo(
+    () => (games ?? []).filter((g) => g.name.toLowerCase().includes(filter.trim().toLowerCase())),
+    [games, filter],
+  );
 
   return (
     <PanelSection title="Games">
-      <PanelSectionRow>
-        <TextField
-          label="Filter"
-          {...({ placeholder: "Filter by name" } as any)}
-          bShowClearAction
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem layout="below" onClick={reload}>
-          <FaSync style={{ marginRight: 6 }} /> Rescan
-        </ButtonItem>
-      </PanelSectionRow>
-      {loading && <PanelSectionRow><Loading label="Scanning Steam library..." /></PanelSectionRow>}
-      {error && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 14 }}>{error}</div></PanelSectionRow>}
-      {!loading && filtered.length === 0 && (
-        <PanelSectionRow>
-          <div style={{ fontSize: 14, opacity: 0.85 }}>
-            {filter.trim()
-              ? <>No games matched "<b>{filter}</b>" — clear the filter or <b>Rescan</b>.</>
-              : <>No mod-able Steam games found. Tap <b>Rescan</b> to retry.</>}
-          </div>
-        </PanelSectionRow>
-      )}
-      {filtered.map((g) => (
-        <PanelSectionRow key={g.id}>
+      <Row>
+        <TextField label="Find a game" value={filter} bShowClearAction onChange={(e) => setFilter(e.target.value)} />
+      </Row>
+      {loading && <Row><Note>Looking for games...</Note></Row>}
+      {error && <Row><ErrorText text={error} /></Row>}
+      {!loading && shown.length === 0 && <Row><Note>No games found.</Note></Row>}
+      {shown.map((g) => (
+        <Row key={g.id}>
           <ButtonItem layout="below" onClick={() => onPick(g)}>
             <div style={{ textAlign: "left" }}>
               <div style={{ fontSize: 14 }}>{g.name}</div>
               {g.mod_count > 0 && (
-                <div style={{ fontSize: 13, opacity: 0.85 }}>
-                  {g.enabled_mod_count}/{g.mod_count} mod{g.mod_count === 1 ? "" : "s"} enabled
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                  {g.enabled_mod_count} of {g.mod_count} mod{g.mod_count === 1 ? "" : "s"} on
                 </div>
               )}
             </div>
           </ButtonItem>
-        </PanelSectionRow>
+        </Row>
       ))}
+      <Row>
+        <ButtonItem layout="below" onClick={reload}>
+          <FaSync style={{ marginRight: 8 }} /> Scan again
+        </ButtonItem>
+      </Row>
     </PanelSection>
   );
 }
 
 // ------------------------------------------------------------ settings
 
-function SettingsPanel() {
-  const { data, loading, error, reload } = useAsync(() => getSettings(), []);
+function SettingsTab({ onSaved }: { onSaved: () => void }) {
+  const { data, error, reload } = useAsync(() => getSettings(), []);
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   const save = async () => {
     setBusy(true);
-    setMsg(null);
+    setErr(null);
     try {
       await setNexusApiKey(key.trim());
       setKey("");
-      setMsg("Saved.");
       reload();
-    } catch (e: any) {
-      setMsg(String(e?.message ?? e));
+      onSaved();
+    } catch (e) {
+      setErr(errText(e));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <PanelSection title="Settings">
-      {loading && <PanelSectionRow><Loading /></PanelSectionRow>}
-      {error && <PanelSectionRow><div style={{ color: "#ff6b6b", fontSize: 14 }}>{error}</div></PanelSectionRow>}
-      {data && (
-        <>
-          <PanelSectionRow>
-            <div style={{ fontSize: 14 }}>
-              Nexus API key: {data.nexus_api_key_set ? data.nexus_api_key : "(not set)"}
-            </div>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <TextField
-              label="New API key"
-              description="Get yours from nexusmods.com → My Account → API Access"
-              {...({ placeholder: "Paste your Nexus personal API key" } as any)}
-              bShowClearAction
-              bIsPassword
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-            />
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={save} disabled={busy || !key.trim()}>
-              {busy ? "Saving..." : "Save key"}
-            </ButtonItem>
-          </PanelSectionRow>
-          {msg && <PanelSectionRow><div style={{ fontSize: 14, opacity: 0.85 }}>{msg}</div></PanelSectionRow>}
-        </>
-      )}
+    <PanelSection title="Nexus account">
+      {error && <Row><ErrorText text={error} /></Row>}
+      {data && <Row><Note>API key: {data.nexus_api_key_set ? data.nexus_api_key : "not set"}</Note></Row>}
+      <Row>
+        <TextField
+          label={data?.nexus_api_key_set ? "Replace API key" : "API key"}
+          description="Find it at nexusmods.com/settings/api-keys"
+          bIsPassword
+          bShowClearAction
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+        />
+      </Row>
+      <Row>
+        <ButtonItem layout="below" onClick={save} disabled={busy || !key.trim()}>
+          {busy ? "Saving..." : "Save key"}
+        </ButtonItem>
+      </Row>
+      {err && <Row><ErrorText text={err} /></Row>}
     </PanelSection>
   );
 }
 
-// ------------------------------------------------------------ top-level
-
-type TopTab = "games" | "settings";
+// ------------------------------------------------------------ root
 
 function Content() {
-  const [tab, setTab] = useState<TopTab>("games");
-  const [selected, setSelected] = useState<Game | null>(null);
-  const [handler, setHandler] = useState<HandlerInfo | null>(null);
+  const [tab, setTab] = useState<"games" | "settings">("games");
+  const [game, setGame] = useState<{ game: Game; handler: HandlerInfo } | null>(null);
+  const { data: settings, reload: reloadSettings } = useAsync(() => getSettings(), []);
+  const hasKey = !!settings?.nexus_api_key_set;
 
   const pick = async (g: Game) => {
-    try {
-      const info = await getHandlerInfo(g.id);
-      setHandler(info);
-      setSelected(g);
-    } catch (e) {
-      console.error("[mod-manager] failed to load handler info", e);
-      setHandler({ name: "generic", tools: [] });
-      setSelected(g);
-    }
+    const handler = await getHandlerInfo(g.id).catch(() => ({ name: "generic", tools: [] }));
+    setGame({ game: g, handler });
   };
+
+  if (game) {
+    return (
+      <ErrorBoundary>
+        <GameView game={game.game} handler={game.handler} hasKey={hasKey} onBack={() => setGame(null)} />
+      </ErrorBoundary>
+    );
+  }
 
   return (
     <ErrorBoundary>
-      {!selected && (
-        <PanelSection>
-          <PanelSectionRow>
-            <div style={{ display: "flex", gap: 4 }}>
-              <TabPill label="Games" active={tab === "games"} onClick={() => setTab("games")} />
-              <TabPill label="Settings" active={tab === "settings"} onClick={() => setTab("settings")} />
-            </div>
-          </PanelSectionRow>
-        </PanelSection>
-      )}
-      {selected && handler && (
-        <GameDetail
-          game={selected}
-          handler={handler}
-          onBack={() => {
-            setSelected(null);
-            setHandler(null);
-          }}
-        />
-      )}
-      {!selected && tab === "games" && <GamePicker onPick={pick} />}
-      {!selected && tab === "settings" && <SettingsPanel />}
+      <PanelSection>
+        <Row>
+          <Pills options={[["games", "Games"], ["settings", "Settings"]]} value={tab} onChange={setTab} />
+        </Row>
+      </PanelSection>
+      {tab === "games" ? <GameList onPick={pick} /> : <SettingsTab onSaved={reloadSettings} />}
     </ErrorBoundary>
   );
 }
@@ -967,5 +644,4 @@ export default definePlugin(() => ({
   titleView: <div>Mod Manager</div>,
   content: <Content />,
   icon: <FaPuzzlePiece />,
-  onDismount() {},
 }));
