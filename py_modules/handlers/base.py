@@ -31,16 +31,22 @@ class BaseHandler:
       ``backup_root`` (mirroring their relative paths). Returns the list of
       paths it touched, again relative to the game dir.
     * ``disable(game, mod_files, backup_root)`` — reverse the above.
-    * ``post_install_payload(payload_root)`` — adjust the extracted archive
+    * ``post_install_payload(payload_root, game_root)`` — adjust the extracted archive
       tree before it's recorded in the library (e.g. normalize layout).
     """
 
     name: str = "generic"
+    # Steam appid -> Nexus game domain for every game this handler supports.
+    games: dict[str, str] = {}
 
     # ----- lifecycle hooks for the extracted payload ---------------------
 
-    def post_install_payload(self, payload_root: Path) -> None:
-        flatten_single_root(payload_root)
+    def post_install_payload(self, payload_root: Path, game_root: Path | None = None) -> None:
+        entries = [p for p in payload_root.iterdir() if not p.name.startswith(".")]
+        # A lone top folder is usually a wrapper ("MyMod-v1.2/"), unless the
+        # game has a folder of that name ("Data/", "BepInEx/").
+        if len(entries) == 1 and not (game_root and (game_root / entries[0].name).is_dir()):
+            flatten_single_root(payload_root)
 
     # ----- enable / disable -- subclasses override these -----------------
 

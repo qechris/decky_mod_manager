@@ -54,12 +54,12 @@ KCD2_APPID = "1771300"
 
 # Files/dirs that indicate "this is a KCD mod's content tree" — used when
 # detecting how an archive is shaped.
-_MOD_INNER_MARKERS = ("Data", "Localization", "mod.manifest", "mod.cfg")
+_MOD_INNER_MARKERS = {"data", "localization", "mod.manifest", "mod.cfg"}
 
 
 def _looks_like_kcd_mod(p: Path) -> bool:
     """True if ``p`` is a folder containing the inside of a single KCD mod."""
-    return p.is_dir() and any((p / m).exists() for m in _MOD_INNER_MARKERS)
+    return p.is_dir() and any(c.name.lower() in _MOD_INNER_MARKERS for c in p.iterdir())
 
 
 def _has_mods_dir(p: Path) -> bool:
@@ -68,10 +68,11 @@ def _has_mods_dir(p: Path) -> bool:
 
 class KingdomComeHandler(BaseHandler):
     name = "kingdom_come"
+    games = {KCD_APPID: "kingdomcomedeliverance", KCD2_APPID: "kingdomcomedeliverance2"}
 
     # ------------------------------------------------------------ payload
 
-    def post_install_payload(self, payload_root: Path) -> None:
+    def post_install_payload(self, payload_root: Path, game_root: Path | None = None) -> None:
         """Normalize the extracted archive to the KCD install-relative layout.
 
         After this runs, ``payload_root`` should look like a chunk of the

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+from urllib.parse import urlparse
+
 import decky
 
+from handlers import known_nexus_domain
 from mod_manager import Game, ModManager, to_payload
-from nexus import NexusClient, NexusError
+from nexus import NexusClient, NexusError, NexusKeyRequired, parse_nxm
 # NOTE: do NOT name this module `settings` — Decky Loader ships a
 # PyInstaller-bundled `decky_loader.settings` whose modules become importable
 # at the bare name, shadowing any same-named module in py_modules/. We hit this
@@ -34,7 +38,7 @@ class Plugin:
     async def install_mod(
         self, game_id: str, archive_path: str, display_name: str | None = None
     ) -> dict:
-        mod = await self.manager.install_archive(game_id, archive_path, display_name)
+        mod = await self.manager.install_archive(self._get_game(game_id), archive_path, display_name)
         return mod.to_dict()
 
     async def uninstall_mod(self, game_id: str, mod_id: str) -> bool:
@@ -60,60 +64,45 @@ class Plugin:
 
     # ----------------------------- nexus ---------------------------------
 
-    async def nexus_resolve_domain(self, game_id: str) -> dict:
-        game = self._get_game(game_id)
-        api_key = self.settings.get("nexus_api_key") or None
-        domain = self.nexus.resolve_domain(game.id, game.name, api_key)
-        return {"domain": domain, "appid": game.id, "name": game.name}
+    async def nexus_browse(self, game_id: str, sort: str) -> list[dict]:
+        domain, api_key = self._nexus_ctx(game_id, need_key=False)
+        return [m.to_dict() for m in await self.nexus.browse(domain, sort, api_key)]
 
     async def nexus_search(self, game_id: str, query: str) -> list[dict]:
-        game = self._get_game(game_id)
-        api_key = self.settings.get("nexus_api_key") or None
-        domain = self.nexus.resolve_domain(game.id, game.name, api_key)
-        if not domain:
-            raise NexusError(f"No Nexus domain known for '{game.name}' (set API key in Settings).")
-        hits = await self.nexus.search(domain, query, api_key=api_key)
-        return [h.to_dict() for h in hits]
-
-    async def nexus_trending(self, game_id: str) -> list[dict]:
-        game, domain, api_key = self._nexus_ctx(game_id)
-        return await self.nexus.trending(domain, api_key)
-
-    async def nexus_mod_info(self, game_id: str, mod_id: int) -> dict:
-        game, domain, api_key = self._nexus_ctx(game_id)
-        return await self.nexus.mod_info(domain, int(mod_id), api_key)
+        domain, _ = self._nexus_ctx(game_id, need_key=False)
+        return [m.to_dict() for m in await self.nexus.search(domain, query)]
 
     async def nexus_mod_files(self, game_id: str, mod_id: int) -> list[dict]:
-        game, domain, api_key = self._nexus_ctx(game_id)
-        files = await self.nexus.mod_files(domain, int(mod_id), api_key)
-        return [f.to_dict() for f in files]
+        domain, api_key = self._nexus_ctx(game_id)
+        return [f.to_dict() for f in await self.nexus.mod_files(domain, int(mod_id), api_key)]
 
-    async def nexus_install(
-        self,
-        game_id: str,
-        mod_id: int,
-        file_id: int,
-        display_name: str,
-        nxm_key: str | None = None,
-        nxm_expires: int | None = None,
-    ) -> dict:
-        game, domain, api_key = self._nexus_ctx(game_id)
-        link = await self.nexus.download_link(
-            domain, int(mod_id), int(file_id), api_key,
-            nxm_key=nxm_key, nxm_expires=nxm_expires,
-        )
-        cache_dir = self.manager.data_dir / "cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        # Filename comes from the URL path; ensure we keep an extension.
-        from urllib.parse import urlparse
-        from pathlib import Path as _P
-        archive_name = _P(urlparse(link).path).name or f"nexus-{mod_id}-{file_id}.zip"
-        archive_path = cache_dir / archive_name
-        await self.nexus.download_to(link, archive_path)
-        mod = await self.manager.install_archive(
-            game.id, str(archive_path), display_name,
-            source="nexus", nexus_mod_id=int(mod_id),
-        )
+    async def nexus_install(self, game_id: str, mod_id: int, file_id: int, display_name: str) -> dict:
+        domain, api_key = self._nexus_ctx(game_id)
+        try:
+            link = await self.nexus.download_link(domain, int(file_id), api_key)
+        except NexusKeyRequired:
+            return {"needs_nxm": True}
+        mod = await self._install_from_link(game_id, link, display_name, int(mod_id))
+        return {"mod": mod}
+
+    async def nexus_install_nxm(self, game_id: str, url: str, display_name: str | None = None) -> dict:
+        domain, api_key = self._nexus_ctx(game_id)
+        nxm = parse_nxm(url)
+        if nxm.domain != domain:
+            raise NexusError(f"That link is for '{nxm.domain}', not this game ({domain}).")
+        link = await self.nexus.download_link(domain, nxm.file_id, api_key, key=nxm.key, expires=nxm.expires)
+        mod = await self._install_from_link(game_id, link, display_name, nxm.mod_id)
+        return {"mod": mod}
+
+    async def _install_from_link(self, game_id: str, link: str, display_name: str | None, mod_id: int) -> dict:
+        archive = self.manager.data_dir / "cache" / Path(urlparse(link).path).name
+        await self.nexus.download_to(link, archive)
+        try:
+            mod = await self.manager.install_archive(
+                self._get_game(game_id), str(archive), display_name or None, source="nexus", nexus_mod_id=mod_id,
+            )
+        finally:
+            archive.unlink(missing_ok=True)
         return mod.to_dict()
 
     # ----------------------------- handler tools -------------------------
@@ -121,7 +110,6 @@ class Plugin:
     async def script_merger(self, game_id: str, action: str) -> dict:
         """status / install / launch for the Witcher 3 Script Merger."""
         from tools.script_merger import script_merger_action
-        from pathlib import Path
 
         game = self._get_game(game_id)
         api_key = self.settings.get("nexus_api_key") or None
@@ -160,7 +148,6 @@ class Plugin:
 
     def _w3_merge_context(self, game_id: str):
         """Build the (game, mods_payload) tuple both merger RPCs need."""
-        from pathlib import Path
         game = self._get_game(game_id)
         enabled = [m for m in self.manager.list_mods(game.id) if m.enabled]
         mods_payload = []
@@ -182,15 +169,16 @@ class Plugin:
                 return g
         raise LookupError(f"game not found: {game_id}")
 
-    def _nexus_ctx(self, game_id: str) -> tuple[Game, str, str]:
+    def _nexus_ctx(self, game_id: str, need_key: bool = True) -> tuple[str, str | None]:
+        api_key = self.settings.get("nexus_api_key") or None
+        if need_key and not api_key:
+            raise NexusError("Add your Nexus API key in Settings first.")
         game = self._get_game(game_id)
-        api_key = self.settings.get("nexus_api_key")
-        if not api_key:
-            raise NexusError("Set your Nexus API key in Settings first.")
-        domain = self.nexus.resolve_domain(game.id, game.name, api_key)
+        domain = known_nexus_domain(game.id) or self.nexus.resolve_domain(game.id, api_key)
         if not domain:
-            raise NexusError(f"No Nexus domain known for '{game.name}'.")
-        return game, domain, api_key
+            hint = "" if api_key else " Adding your API key in Settings may help."
+            raise NexusError(f"Couldn't find {game.name} on Nexus.{hint}")
+        return domain, api_key
 
     # ----------------------------- lifecycle -----------------------------
 

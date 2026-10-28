@@ -53,13 +53,18 @@ def _has_install_root_layout(p: Path) -> bool:
     return False
 
 
+def _has_content_dir(p: Path) -> bool:
+    # Mod authors ship both ``content/`` and ``Content/``; the game accepts either.
+    return p.is_dir() and any(c.is_dir() and c.name.lower() == "content" for c in p.iterdir())
+
+
 def _is_mod_folder(p: Path) -> bool:
     """A directory that on its own represents one mod (has content/ inside)."""
-    return p.is_dir() and (p / "content").is_dir()
+    return _has_content_dir(p)
 
 
 def _is_dlc_folder(p: Path) -> bool:
-    return p.is_dir() and p.name.lower().startswith("dlc") and (p / "content").is_dir()
+    return p.name.lower().startswith("dlc") and _has_content_dir(p)
 
 
 # Meaningful W3 path segments we must NOT hoist away — they're load-bearing.
@@ -129,10 +134,11 @@ def _mods_settings_path(install_path: Path, appid: str) -> Path:
 
 class Witcher3Handler(BaseHandler):
     name = "witcher3"
+    games = {WITCHER3_APPID: "witcher3"}
 
     # ------------------------------------------------------------ payload
 
-    def post_install_payload(self, payload_root: Path) -> None:
+    def post_install_payload(self, payload_root: Path, game_root: Path | None = None) -> None:
         """Normalize the extracted archive to the W3 install-root layout.
 
         After this runs, ``payload_root`` should look like a chunk of the

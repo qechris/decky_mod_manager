@@ -45,13 +45,14 @@ or commented out. Open it and check:
 nano '/home/deck/.steam/steam/steamapps/common/KingdomComeDeliverance/Mods/mod_order.txt'
 ```
 
-## Nexus search returns no results / "Search failed: ..."
+## Get mods shows an error or nothing
 
-- API key not set. **Decky home → Mod Manager → Settings → New API key**.
-- Key invalid. Regenerate at
-  [nexusmods.com → My Account → API Access](https://www.nexusmods.com/users/myaccount?tab=api).
-- The "Search failed" red box always prints the actual backend error —
-  read it before guessing.
+- API key not set. **Mod Manager → Settings → API key**. Built-in games
+  (Witcher 3, KCD) can browse without a key; other games need it so we
+  can find them on Nexus.
+- Key invalid. Make a new one at
+  [nexusmods.com/settings/api-keys](https://www.nexusmods.com/settings/api-keys).
+- The red text is the real error from Nexus. Read it before guessing.
 
 ## Native script merger reports "merged 0 files"
 
