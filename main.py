@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import decky
 
@@ -20,6 +22,7 @@ class Plugin:
     manager: ModManager
     settings: Settings
     nexus: NexusClient
+    _jobs: set[asyncio.Task] = set()
 
     # ----------------------------- discovery -----------------------------
 
@@ -64,13 +67,19 @@ class Plugin:
 
     # ----------------------------- nexus ---------------------------------
 
-    async def nexus_browse(self, game_id: str, sort: str) -> list[dict]:
+    async def nexus_browse(self, game_id: str, sort: str, compatible_only: bool = True) -> dict:
         domain, api_key = self._nexus_ctx(game_id, need_key=False)
-        return [m.to_dict() for m in await self.nexus.browse(domain, sort, api_key)]
+        return self._compatible(game_id, await self.nexus.browse(domain, sort, api_key), compatible_only)
 
-    async def nexus_search(self, game_id: str, query: str) -> list[dict]:
+    async def nexus_search(self, game_id: str, query: str, compatible_only: bool = True) -> dict:
         domain, _ = self._nexus_ctx(game_id, need_key=False)
-        return [m.to_dict() for m in await self.nexus.search(domain, query)]
+        return self._compatible(game_id, await self.nexus.search(domain, query), compatible_only)
+
+    def _compatible(self, game_id: str, mods: list, compatible_only: bool) -> dict:
+        version = self.manager.handler_for(game_id).game_version(self._get_game(game_id))
+        if version and compatible_only:
+            mods = [m for m in mods if m.updated_at[:10] >= version[1]]
+        return {"version": version[0] if version else None, "mods": [m.to_dict() for m in mods]}
 
     async def nexus_mod_files(self, game_id: str, mod_id: int) -> list[dict]:
         domain, api_key = self._nexus_ctx(game_id)
@@ -82,8 +91,7 @@ class Plugin:
             link = await self.nexus.download_link(domain, int(file_id), api_key)
         except NexusKeyRequired:
             return {"needs_nxm": True}
-        mod = await self._install_from_link(game_id, link, display_name, int(mod_id))
-        return {"mod": mod}
+        return self._start_install(game_id, link, display_name, int(mod_id))
 
     async def nexus_install_nxm(self, game_id: str, url: str, display_name: str | None = None) -> dict:
         domain, api_key = self._nexus_ctx(game_id)
@@ -91,19 +99,36 @@ class Plugin:
         if nxm.domain != domain:
             raise NexusError(f"That link is for '{nxm.domain}', not this game ({domain}).")
         link = await self.nexus.download_link(domain, nxm.file_id, api_key, key=nxm.key, expires=nxm.expires)
-        mod = await self._install_from_link(game_id, link, display_name, nxm.mod_id)
-        return {"mod": mod}
+        return self._start_install(game_id, link, display_name or f"Nexus mod {nxm.mod_id}", nxm.mod_id)
 
-    async def _install_from_link(self, game_id: str, link: str, display_name: str | None, mod_id: int) -> dict:
-        archive = self.manager.data_dir / "cache" / Path(urlparse(link).path).name
-        await self.nexus.download_to(link, archive)
-        try:
-            mod = await self.manager.install_archive(
-                self._get_game(game_id), str(archive), display_name or None, source="nexus", nexus_mod_id=mod_id,
-            )
-        finally:
-            archive.unlink(missing_ok=True)
-        return mod.to_dict()
+    def _start_install(self, game_id: str, link: str, name: str, mod_id: int) -> dict:
+        """Download and install in the background, reporting through events."""
+        job = uuid4().hex[:8]
+        loop = asyncio.get_running_loop()
+        last = [0.0]
+
+        def progress(fraction: float) -> None:
+            if fraction - last[0] >= 0.02 or fraction == 1:
+                last[0] = fraction
+                asyncio.run_coroutine_threadsafe(decky.emit("install_progress", job, name, fraction), loop)
+
+        async def run() -> None:
+            archive = self.manager.data_dir / "cache" / Path(urlparse(link).path).name
+            try:
+                await self.nexus.download_to(link, archive, progress)
+                await self.manager.install_archive(
+                    self._get_game(game_id), str(archive), name, source="nexus", nexus_mod_id=mod_id,
+                )
+                await decky.emit("install_done", job, name, None)
+            except Exception as e:
+                decky.logger.exception("mod-manager: install of %s failed", name)
+                await decky.emit("install_done", job, name, str(e))
+            finally:
+                archive.unlink(missing_ok=True)
+
+        self._jobs.add(task := loop.create_task(run()))
+        task.add_done_callback(self._jobs.discard)
+        return {"job": job, "name": name}
 
     # ----------------------------- handler tools -------------------------
 

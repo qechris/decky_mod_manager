@@ -244,6 +244,13 @@ class Witcher3Handler(BaseHandler):
 
         restore_tree(game_root, files, backup_root)
 
+    def game_version(self, game: GameLike) -> tuple[str, str] | None:
+        if "Remastered" in getattr(game, "name", ""):
+            return "Remastered", "2026-09-29"
+        if (Path(game.install_path) / "bin" / "x64_dx12").is_dir():
+            return "Next-Gen", "2022-12-14"
+        return None
+
     # ----------------------------------------------------------- tools
 
     def tools(self) -> list[dict]:

@@ -37,6 +37,12 @@ export interface NexusMod {
   downloads: number;
   endorsements: number;
   image: string | null;
+  updated_at: string;
+}
+
+export interface NexusBrowseResult {
+  version: string | null;
+  mods: NexusMod[];
 }
 
 export interface NexusFile {
@@ -49,7 +55,7 @@ export interface NexusFile {
 
 export type NexusSort = "trending" | "popular" | "new" | "updated";
 
-export type NexusInstallResult = { mod: Mod; needs_nxm?: undefined } | { needs_nxm: true; mod?: undefined };
+export type NexusInstallResult = { job: string; name: string; needs_nxm?: undefined } | { needs_nxm: true };
 
 export interface ScriptMergerStatus {
   installed: boolean;
@@ -100,8 +106,8 @@ export const getSettings = callable<[], SettingsView>("get_settings");
 export const setNexusApiKey = callable<[string], SettingsView>("set_nexus_api_key");
 
 // -------- nexus --------
-export const nexusBrowse = callable<[string, NexusSort], NexusMod[]>("nexus_browse");
-export const nexusSearch = callable<[string, string], NexusMod[]>("nexus_search");
+export const nexusBrowse = callable<[string, NexusSort, boolean], NexusBrowseResult>("nexus_browse");
+export const nexusSearch = callable<[string, string, boolean], NexusBrowseResult>("nexus_search");
 export const nexusModFiles = callable<[string, number], NexusFile[]>("nexus_mod_files");
 export const nexusInstall = callable<[string, number, number, string], NexusInstallResult>("nexus_install");
 export const nexusInstallNxm = callable<[string, string, string | null], NexusInstallResult>("nexus_install_nxm");

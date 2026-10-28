@@ -4,18 +4,27 @@ import {
   DialogButton,
   Field,
   Focusable,
+  Navigation,
   PanelSection,
   PanelSectionRow,
+  ProgressBarWithInfo,
   TextField,
   Toggle,
+  ToggleField,
   showModal,
+  useParams,
 } from "@decky/ui";
-import { type FileSelectionType, definePlugin, openFilePicker, toaster } from "@decky/api";
-
-// Ambient const enum; isolatedModules can't inline it.
-const PICK_FILE = 0 as FileSelectionType;
+import {
+  type FileSelectionType,
+  addEventListener,
+  definePlugin,
+  openFilePicker,
+  removeEventListener,
+  routerHook,
+  toaster,
+} from "@decky/api";
 import { Component, ReactNode, useEffect, useMemo, useState } from "react";
-import { FaArrowLeft, FaFolderOpen, FaPuzzlePiece, FaSearch, FaSync, FaTrash } from "react-icons/fa";
+import { FaArrowLeft, FaDownload, FaFolderOpen, FaPuzzlePiece, FaSearch, FaSync, FaTrash } from "react-icons/fa";
 import {
   disableMod,
   enableMod,
@@ -29,7 +38,6 @@ import {
   Mod,
   modsSettingsPath,
   NexusFile,
-  NexusInstallResult,
   NexusMod,
   NexusSort,
   nexusBrowse,
@@ -45,11 +53,71 @@ import {
   uninstallMod,
 } from "./api";
 
+const BROWSE_ROUTE = "/mod-manager/browse/:appid";
+const BLUE = "#1a9fff";
+
+// Ambient const enum; isolatedModules can't inline it.
+const PICK_FILE = 0 as FileSelectionType;
+
 // Decky backend errors carry an empty message; the text is the last traceback line.
 const errText = (e: any) =>
   e?.message ||
   e?.pythonTraceback?.trim().split("\n").pop().replace(/^[\w.]+: /, "") ||
   String(e);
+
+// ------------------------------------------------------------ shared state
+
+// The side menu unmounts whenever a modal or page takes focus, so where the
+// user was lives outside React.
+type GameTab = "mods" | "tools";
+const nav: { top: "games" | "settings"; game: { game: Game; handler: HandlerInfo } | null; gameTab: GameTab } = {
+  top: "games",
+  game: null,
+  gameTab: "mods",
+};
+
+function useNav<K extends keyof typeof nav>(key: K): [(typeof nav)[K], (v: (typeof nav)[K]) => void] {
+  const [value, setValue] = useState(nav[key]);
+  return [value, (v) => setValue((nav[key] = v))];
+}
+
+type Job = { name: string; progress: number };
+const jobs = new Map<string, Job>();
+const jobListeners = new Set<() => void>();
+const notifyJobs = () => jobListeners.forEach((l) => l());
+
+function useJobs() {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const l = () => bump((n) => n + 1);
+    jobListeners.add(l);
+    return () => void jobListeners.delete(l);
+  }, []);
+  return [...jobs.entries()];
+}
+
+function onInstallProgress(job: string, name: string, progress: number) {
+  jobs.set(job, { name, progress });
+  notifyJobs();
+}
+
+function onInstallDone(job: string, name: string, error: string | null) {
+  jobs.delete(job);
+  notifyJobs();
+  toaster.toast(
+    error
+      ? { title: "Install failed", body: `${name}: ${error}`, critical: true }
+      : { title: "Mod installed", body: `${name} is ready. Turn it on in Mods.` },
+  );
+}
+
+function startJob(job: string, name: string) {
+  jobs.set(job, { name, progress: 0 });
+  notifyJobs();
+  toaster.toast({ title: "Downloading", body: name });
+}
+
+// ------------------------------------------------------------ small pieces
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
   state = { err: null as Error | null };
@@ -60,10 +128,10 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { err: Error | nu
     if (!this.state.err) return this.props.children;
     return (
       <PanelSection title="Something went wrong">
-        <PanelSectionRow><ErrorText text={errText(this.state.err)} /></PanelSectionRow>
-        <PanelSectionRow>
+        <Row><ErrorText text={errText(this.state.err)} /></Row>
+        <Row>
           <ButtonItem layout="below" onClick={() => this.setState({ err: null })}>Try again</ButtonItem>
-        </PanelSectionRow>
+        </Row>
       </PanelSection>
     );
   }
@@ -101,7 +169,7 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nonce]);
 
-  return { data, loading, error, reload: () => setNonce((n) => n + 1) };
+  return { data, setData, loading, error, reload: () => setNonce((n) => n + 1) };
 }
 
 function Pills<T extends string>({
@@ -110,96 +178,143 @@ function Pills<T extends string>({
   onChange,
 }: {
   options: [T, ReactNode][];
-  value: T;
+  value: T | null;
   onChange: (v: T) => void;
 }) {
   return (
     <Focusable style={{ display: "flex", gap: 4, flexWrap: "wrap" }} flow-children="horizontal">
-      {options.map(([id, label]) => (
-        <DialogButton
-          key={id}
-          onClick={() => onChange(id)}
-          style={{
-            width: "auto",
-            minWidth: 0,
-            height: 32,
-            padding: "0 12px",
-            borderRadius: 16,
-            fontSize: 13,
-            background: value === id ? "#1a9fff" : undefined,
-            color: value === id ? "#fff" : undefined,
-          }}
-        >
-          {label}
-        </DialogButton>
-      ))}
+      {options.map(([id, label]) => {
+        const active = value === id;
+        return (
+          <DialogButton
+            key={id}
+            onClick={() => onChange(id)}
+            style={{
+              width: "auto",
+              minWidth: 0,
+              height: 32,
+              padding: "0 12px",
+              borderRadius: 16,
+              fontSize: 13,
+              fontWeight: active ? 700 : 400,
+              background: active ? BLUE : undefined,
+              color: active ? "#fff" : undefined,
+              boxShadow: active ? "inset 0 -3px 0 #fff" : undefined,
+            }}
+          >
+            {label}
+          </DialogButton>
+        );
+      })}
     </Focusable>
   );
 }
 
-function installed(mod: Mod) {
-  toaster.toast({ title: "Mod installed", body: `${mod.name}. Turn it on in Mods.` });
+function Downloads() {
+  const list = useJobs();
+  if (!list.length) return null;
+  return (
+    <>
+      {list.map(([id, j]) => (
+        <ProgressBarWithInfo
+          key={id}
+          label={j.name}
+          nProgress={j.progress * 100}
+          indeterminate={j.progress === 0}
+          sOperationText={j.progress >= 1 ? "Installing..." : `Downloading ${Math.round(j.progress * 100)}%`}
+        />
+      ))}
+    </>
+  );
 }
 
-// ------------------------------------------------------------ mods
+function openBrowse(game: Game) {
+  Navigation.Navigate(BROWSE_ROUTE.replace(":appid", game.id));
+  Navigation.CloseSideMenus();
+}
+
+// ------------------------------------------------------------ side menu: mods
 
 function ModsTab({ game }: { game: Game }) {
-  const { data: mods, loading, error, reload } = useAsync(() => listMods(game.id), [game.id]);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { data: mods, setData: setMods, loading, error, reload } = useAsync(() => listMods(game.id), [game.id]);
+  const [installing, setInstalling] = useState(false);
+  const running = useJobs().length;
+
+  useEffect(() => {
+    if (!running) reload();
+  }, [running]);
 
   const installFile = async () => {
-    setErr(null);
+    let path: string;
     try {
-      const picked = await openFilePicker(
-        PICK_FILE,
-        "/home/deck/Downloads",
-        true,
-        true,
-        undefined,
-        ["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz"],
-      );
-      setBusy(true);
-      installed(await installMod(game.id, picked.realpath, null));
+      path = (
+        await openFilePicker(PICK_FILE, "/home/deck/Downloads", true, true, undefined, [
+          "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz",
+        ])
+      ).realpath;
+    } catch {
+      return;
+    }
+    setInstalling(true);
+    try {
+      const mod = await installMod(game.id, path, null);
+      toaster.toast({ title: "Mod installed", body: `${mod.name} is ready. Turn it on below.` });
       reload();
     } catch (e) {
-      if (e) setErr(errText(e));
+      toaster.toast({ title: "Install failed", body: errText(e), critical: true });
     } finally {
-      setBusy(false);
+      setInstalling(false);
     }
   };
 
+  const update = (mod: Mod) => setMods((mods ?? []).map((m) => (m.id === mod.id ? mod : m)));
+
   return (
-    <PanelSection title="Installed mods">
+    <PanelSection title="Mods">
       <Row>
-        <ButtonItem layout="below" onClick={installFile} disabled={busy}>
-          <FaFolderOpen style={{ marginRight: 8 }} />
-          {busy ? "Installing..." : "Install from file"}
+        <ButtonItem layout="below" onClick={() => openBrowse(game)}>
+          <FaDownload style={{ marginRight: 8 }} /> Get mods from Nexus
         </ButtonItem>
       </Row>
-      {err && <Row><ErrorText text={err} /></Row>}
+      <Row>
+        <ButtonItem layout="below" onClick={installFile}>
+          <FaFolderOpen style={{ marginRight: 8 }} />
+          {installing ? "Installing..." : "Install from file"}
+        </ButtonItem>
+      </Row>
+      <Row><Downloads /></Row>
       {loading && !mods && <Row><Note>Loading...</Note></Row>}
       {error && <Row><ErrorText text={error} /></Row>}
-      {mods?.length === 0 && (
-        <Row><Note>No mods yet. Find some in Get mods, or install a downloaded file.</Note></Row>
-      )}
-      {mods?.map((mod) => <ModRow key={mod.id} mod={mod} game={game} onChange={reload} />)}
+      {mods?.length === 0 && <Row><Note>No mods yet. Press Get mods from Nexus to find some.</Note></Row>}
+      {mods?.map((mod) => (
+        <ModRow key={mod.id} mod={mod} game={game} onUpdate={update} onRemoved={reload} />
+      ))}
     </PanelSection>
   );
 }
 
-function ModRow({ mod, game, onChange }: { mod: Mod; game: Game; onChange: () => void }) {
+function ModRow({
+  mod,
+  game,
+  onUpdate,
+  onRemoved,
+}: {
+  mod: Mod;
+  game: Game;
+  onUpdate: (m: Mod) => void;
+  onRemoved: () => void;
+}) {
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
-  const run = async (fn: () => Promise<unknown>) => {
+  const toggle = async (on: boolean) => {
+    if (busy) return;
     setBusy(true);
-    setErr(null);
+    onUpdate({ ...mod, enabled: on });
     try {
-      await fn();
-      onChange();
+      onUpdate(await (on ? enableMod : disableMod)(game.id, mod.id));
     } catch (e) {
-      setErr(errText(e));
+      onUpdate(mod);
+      toaster.toast({ title: `Couldn't turn ${on ? "on" : "off"} ${mod.name}`, body: errText(e), critical: true });
     } finally {
       setBusy(false);
     }
@@ -211,29 +326,24 @@ function ModRow({ mod, game, onChange }: { mod: Mod; game: Game; onChange: () =>
         strTitle={`Remove ${mod.name}?`}
         strDescription="This deletes the mod and puts back any game files it replaced."
         strOKButtonText="Remove"
-        onOK={() => run(() => uninstallMod(game.id, mod.id))}
+        onOK={async () => {
+          try {
+            await uninstallMod(game.id, mod.id);
+            toaster.toast({ title: "Mod removed", body: mod.name });
+            onRemoved();
+          } catch (e) {
+            toaster.toast({ title: `Couldn't remove ${mod.name}`, body: errText(e), critical: true });
+          }
+        }}
       />,
     );
 
   return (
     <Row>
-      <Field
-        label={mod.name}
-        description={err ? <ErrorText text={err} /> : busy ? "Working..." : mod.enabled ? "On" : "Off"}
-        childrenLayout="inline"
-        bottomSeparator="standard"
-      >
+      <Field label={mod.name} description={mod.enabled ? "On" : "Off"} childrenLayout="inline" bottomSeparator="standard">
         <Focusable style={{ display: "flex", gap: 8, alignItems: "center" }} flow-children="horizontal">
-          <Toggle
-            value={mod.enabled}
-            disabled={busy}
-            onChange={(on) => run(() => (on ? enableMod : disableMod)(game.id, mod.id))}
-          />
-          <DialogButton
-            onClick={remove}
-            disabled={busy}
-            style={{ minWidth: 0, width: 40, height: 32, padding: 0 }}
-          >
+          <Toggle value={mod.enabled} onChange={toggle} />
+          <DialogButton onClick={remove} style={{ minWidth: 0, width: 40, height: 32, padding: 0 }}>
             <FaTrash />
           </DialogButton>
         </Focusable>
@@ -242,205 +352,29 @@ function ModRow({ mod, game, onChange }: { mod: Mod; game: Game; onChange: () =>
   );
 }
 
-// ------------------------------------------------------------ nexus
-
-function NexusTab({ game, hasKey }: { game: Game; hasKey: boolean }) {
-  const [sort, setSort] = useState<NexusSort>("trending");
-  const [query, setQuery] = useState("");
-  const [searched, setSearched] = useState("");
-  const { data: hits, loading, error } = useAsync(
-    () => (searched ? nexusSearch(game.id, searched) : nexusBrowse(game.id, sort)),
-    [game.id, sort, searched],
-  );
-
-  const search = () => setSearched(query.trim());
-  const pickSort = (s: NexusSort) => {
-    setQuery("");
-    setSearched("");
-    setSort(s);
-  };
-
-  return (
-    <PanelSection title="Get mods from Nexus">
-      {!hasKey && (
-        <Row><Note>Add your Nexus API key in Settings to download mods.</Note></Row>
-      )}
-      <Row>
-        <TextField
-          label="Search"
-          value={query}
-          bShowClearAction
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              search();
-            }
-          }}
-        />
-      </Row>
-      <Row>
-        <ButtonItem layout="below" onClick={search}>
-          <FaSearch style={{ marginRight: 8 }} /> Search
-        </ButtonItem>
-      </Row>
-      <Row>
-        <Pills
-          options={[["trending", "Trending"], ["popular", "Popular"], ["new", "New"], ["updated", "Updated"]]}
-          value={searched ? ("" as NexusSort) : sort}
-          onChange={pickSort}
-        />
-      </Row>
-      {loading && <Row><Note>Loading...</Note></Row>}
-      {error && <Row><ErrorText text={error} /></Row>}
-      {!loading && !error && hits?.length === 0 && <Row><Note>Nothing found. Try other words.</Note></Row>}
-      {!loading &&
-        hits?.map((hit) => (
-          <Row key={hit.mod_id}>
-            <ButtonItem
-              layout="below"
-              disabled={!hasKey}
-              onClick={() => showModal(<NexusInstallModal game={game} hit={hit} />)}
-            >
-              <div style={{ display: "flex", gap: 10, alignItems: "center", textAlign: "left" }}>
-                {hit.image && (
-                  <img src={hit.image} style={{ width: 56, height: 40, objectFit: "cover", borderRadius: 4 }} />
-                )}
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 14, whiteSpace: "normal" }}>{hit.name}</div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>
-                    {hit.author} · {hit.downloads.toLocaleString()} downloads
-                  </div>
-                </div>
-              </div>
-            </ButtonItem>
-          </Row>
-        ))}
-    </PanelSection>
-  );
-}
-
-function NexusInstallModal({ game, hit, closeModal }: { game: Game; hit: NexusMod; closeModal?: () => void }) {
-  const { data: files, loading, error } = useAsync(() => nexusModFiles(game.id, hit.mod_id), [hit.mod_id]);
-  const [selected, setSelected] = useState<NexusFile | null>(null);
-  const [needsNxm, setNeedsNxm] = useState(false);
-  const [nxm, setNxm] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (files && !selected) setSelected(files[0] ?? null);
-  }, [files]);
-
-  const submit = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const res: NexusInstallResult = needsNxm
-        ? await nexusInstallNxm(game.id, nxm.trim(), hit.name)
-        : await nexusInstall(game.id, hit.mod_id, selected!.file_id, hit.name);
-      if (res.needs_nxm) {
-        setNeedsNxm(true);
-        return;
-      }
-      installed(res.mod);
-      closeModal?.();
-    } catch (e) {
-      setErr(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <ConfirmModal
-      strTitle={hit.name}
-      strOKButtonText={busy ? "Downloading..." : "Install"}
-      bOKDisabled={busy || (needsNxm ? !nxm.trim() : !selected)}
-      onOK={submit}
-      onCancel={closeModal}
-      bHideCloseIcon
-    >
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {hit.summary && <Note>{hit.summary}</Note>}
-        {loading && <Note>Loading files...</Note>}
-        {error && <ErrorText text={error} />}
-        {!needsNxm &&
-          files?.map((f) => (
-            <Focusable
-              key={f.file_id}
-              onActivate={() => setSelected(f)}
-              onClick={() => setSelected(f)}
-              style={{
-                padding: 10,
-                borderRadius: 4,
-                border: `2px solid ${selected?.file_id === f.file_id ? "#1a9fff" : "#ffffff1a"}`,
-              }}
-            >
-              <div style={{ fontSize: 15 }}>{f.name}</div>
-              <div style={{ fontSize: 13, opacity: 0.7 }}>
-                {[f.category, f.version && `v${f.version}`, f.is_primary && "recommended"].filter(Boolean).join(" · ")}
-              </div>
-            </Focusable>
-          ))}
-        {!loading && files?.length === 0 && <Note>This mod has no files to download.</Note>}
-        {needsNxm && (
-          <>
-            <Note>
-              Free Nexus accounts need a download link from the website. Open this mod on nexusmods.com, press
-              "Mod manager download", copy the nxm:// link, and paste it here.
-            </Note>
-            <TextField label="nxm:// link" value={nxm} bShowClearAction onChange={(e) => setNxm(e.target.value)} />
-          </>
-        )}
-        {err && <ErrorText text={err} />}
-      </div>
-    </ConfirmModal>
-  );
-}
-
-// ------------------------------------------------------------ witcher 3 tools
+// ------------------------------------------------------------ side menu: witcher 3 tools
 
 function W3ToolsTab({ game }: { game: Game }) {
   const { data: status, reload } = useAsync(() => scriptMerger(game.id, "status"), [game.id]);
   const { data: settingsPath } = useAsync(() => modsSettingsPath(game.id), [game.id]);
   const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
 
-  const run = async (label: string, fn: () => Promise<string>) => {
-    setBusy(label);
-    setMsg(null);
-    setErr(null);
+  const run = async (id: string, fn: () => Promise<string>) => {
+    if (busy) return;
+    setBusy(id);
     try {
-      setMsg(await fn());
+      toaster.toast({ title: "Done", body: await fn() });
       reload();
     } catch (e) {
-      setErr(errText(e));
+      toaster.toast({ title: "That didn't work", body: errText(e), critical: true });
     } finally {
       setBusy(null);
     }
   };
 
-  const mergeScripts = () =>
-    run("scripts", async () => {
-      const r = await scriptMergerNative(game.id);
-      return `Merged ${r.merged_files.length} script(s).` + conflictNote(r.conflicts_auto_resolved.length, r.skipped_no_vanilla.length);
-    });
-  const mergeSettings = () =>
-    run("settings", async () => {
-      const r = await settingsMergerNative(game.id);
-      return `Merged ${r.merged_files.length} settings file(s).` + conflictNote(r.conflicts_auto_resolved.length, r.skipped_no_baseline.length);
-    });
-  const undo = () =>
-    run("undo", async () => {
-      const r = await removeMerged(game.id);
-      return r.removed_merged_script_mod || r.restored_settings_files.length ? "Merges removed." : "Nothing to remove.";
-    });
-
-  const button = (id: string, label: string, onClick: () => void, disabled = false) => (
+  const button = (id: string, label: string, fn: () => Promise<string>, disabled = false) => (
     <Row>
-      <ButtonItem layout="below" onClick={onClick} disabled={!!busy || disabled}>
+      <ButtonItem layout="below" onClick={() => run(id, fn)} disabled={disabled}>
         {busy === id ? "Working..." : label}
       </ButtonItem>
     </Row>
@@ -449,12 +383,19 @@ function W3ToolsTab({ game }: { game: Game }) {
   return (
     <>
       <PanelSection title="Merge mods">
-        <Row><Note>Run this after turning mods on or off. It fixes mods that change the same files.</Note></Row>
-        {button("scripts", "Merge scripts", mergeScripts)}
-        {button("settings", "Merge settings", mergeSettings)}
-        {button("undo", "Remove merges", undo)}
-        {msg && <Row><Note>{msg}</Note></Row>}
-        {err && <Row><ErrorText text={err} /></Row>}
+        <Row><Note>Run after turning mods on or off. It fixes mods that change the same files.</Note></Row>
+        {button("scripts", "Merge scripts", async () => {
+          const r = await scriptMergerNative(game.id);
+          return `Merged ${r.merged_files.length} script(s).` + conflictNote(r.conflicts_auto_resolved.length, r.skipped_no_vanilla.length);
+        })}
+        {button("settings", "Merge settings", async () => {
+          const r = await settingsMergerNative(game.id);
+          return `Merged ${r.merged_files.length} settings file(s).` + conflictNote(r.conflicts_auto_resolved.length, r.skipped_no_baseline.length);
+        })}
+        {button("undo", "Remove merges", async () => {
+          const r = await removeMerged(game.id);
+          return r.removed_merged_script_mod || r.restored_settings_files.length ? "Merges removed." : "Nothing to remove.";
+        })}
       </PanelSection>
       <PanelSection title="Script Merger app">
         <Row>
@@ -463,24 +404,14 @@ function W3ToolsTab({ game }: { game: Game }) {
             {status && !status.proton_path && " Proton not found."}
           </Note>
         </Row>
-        {status &&
-          !status.installed &&
-          button("install", "Download Script Merger", () =>
-            run("install", async () => (await scriptMerger(game.id, "install"), "Script Merger installed.")),
-          )}
+        {status && !status.installed &&
+          button("install", "Download Script Merger", async () => (await scriptMerger(game.id, "install"), "Script Merger installed."))}
         {status?.installed &&
-          button(
-            "launch",
-            "Open Script Merger",
-            () => run("launch", async () => (await scriptMerger(game.id, "launch"), "Script Merger opened.")),
-            !status.proton_path,
-          )}
+          button("launch", "Open Script Merger", async () => (await scriptMerger(game.id, "launch"), "Script Merger opened."), !status.proton_path)}
       </PanelSection>
       {settingsPath && (
         <PanelSection title="Load order file">
-          <Row>
-            <div style={{ fontSize: 12, opacity: 0.7, wordBreak: "break-all" }}>{settingsPath.path}</div>
-          </Row>
+          <Row><div style={{ fontSize: 12, opacity: 0.7, wordBreak: "break-all" }}>{settingsPath.path}</div></Row>
           {!settingsPath.using_prefix_documents && (
             <Row><Note>Start the game once so Proton makes its folders, then come back.</Note></Row>
           )}
@@ -497,17 +428,11 @@ function conflictNote(conflicts: number, skipped: number) {
   );
 }
 
-// ------------------------------------------------------------ game
+// ------------------------------------------------------------ side menu: game
 
-type GameTab = "mods" | "nexus" | "tools";
-
-function GameView({ game, handler, hasKey, onBack }: { game: Game; handler: HandlerInfo; hasKey: boolean; onBack: () => void }) {
-  const [tab, setTab] = useState<GameTab>("mods");
-  const tabs: [GameTab | "back", ReactNode][] = [
-    ["back", <FaArrowLeft style={{ verticalAlign: "middle" }} />],
-    ["mods", "Mods"],
-    ["nexus", "Get mods"],
-  ];
+function GameView({ game, handler, onBack }: { game: Game; handler: HandlerInfo; onBack: () => void }) {
+  const [tab, setTab] = useNav("gameTab");
+  const tabs: [GameTab | "back", ReactNode][] = [["back", <FaArrowLeft style={{ verticalAlign: "middle" }} />], ["mods", "Mods"]];
   if (handler.tools.length) tabs.push(["tools", "Tools"]);
 
   return (
@@ -517,14 +442,10 @@ function GameView({ game, handler, hasKey, onBack }: { game: Game; handler: Hand
           <Pills options={tabs} value={tab} onChange={(t) => (t === "back" ? onBack() : setTab(t))} />
         </Row>
       </PanelSection>
-      {tab === "mods" && <ModsTab game={game} />}
-      {tab === "nexus" && <NexusTab game={game} hasKey={hasKey} />}
-      {tab === "tools" && <W3ToolsTab game={game} />}
+      {tab === "tools" && handler.tools.length ? <W3ToolsTab game={game} /> : <ModsTab game={game} />}
     </>
   );
 }
-
-// ------------------------------------------------------------ games
 
 function GameList({ onPick }: { onPick: (g: Game) => void }) {
   const { data: games, loading, error, reload } = useAsync(() => listGames(), []);
@@ -539,9 +460,9 @@ function GameList({ onPick }: { onPick: (g: Game) => void }) {
       <Row>
         <TextField label="Find a game" value={filter} bShowClearAction onChange={(e) => setFilter(e.target.value)} />
       </Row>
-      {loading && <Row><Note>Looking for games...</Note></Row>}
+      {loading && !games && <Row><Note>Looking for games...</Note></Row>}
       {error && <Row><ErrorText text={error} /></Row>}
-      {!loading && shown.length === 0 && <Row><Note>No games found.</Note></Row>}
+      {games && shown.length === 0 && <Row><Note>No games found.</Note></Row>}
       {shown.map((g) => (
         <Row key={g.id}>
           <ButtonItem layout="below" onClick={() => onPick(g)}>
@@ -565,24 +486,21 @@ function GameList({ onPick }: { onPick: (g: Game) => void }) {
   );
 }
 
-// ------------------------------------------------------------ settings
-
-function SettingsTab({ onSaved }: { onSaved: () => void }) {
+function SettingsTab() {
   const { data, error, reload } = useAsync(() => getSettings(), []);
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
   const save = async () => {
+    if (busy || !key.trim()) return;
     setBusy(true);
-    setErr(null);
     try {
       await setNexusApiKey(key.trim());
       setKey("");
       reload();
-      onSaved();
+      toaster.toast({ title: "Nexus key saved", body: "You can now download mods." });
     } catch (e) {
-      setErr(errText(e));
+      toaster.toast({ title: "Couldn't save the key", body: errText(e), critical: true });
     } finally {
       setBusy(false);
     }
@@ -603,51 +521,251 @@ function SettingsTab({ onSaved }: { onSaved: () => void }) {
         />
       </Row>
       <Row>
-        <ButtonItem layout="below" onClick={save} disabled={busy || !key.trim()}>
-          {busy ? "Saving..." : "Save key"}
-        </ButtonItem>
+        <ButtonItem layout="below" onClick={save}>{busy ? "Saving..." : "Save key"}</ButtonItem>
       </Row>
-      {err && <Row><ErrorText text={err} /></Row>}
     </PanelSection>
   );
 }
 
-// ------------------------------------------------------------ root
-
 function Content() {
-  const [tab, setTab] = useState<"games" | "settings">("games");
-  const [game, setGame] = useState<{ game: Game; handler: HandlerInfo } | null>(null);
-  const { data: settings, reload: reloadSettings } = useAsync(() => getSettings(), []);
-  const hasKey = !!settings?.nexus_api_key_set;
+  const [top, setTop] = useNav("top");
+  const [game, setGame] = useNav("game");
 
   const pick = async (g: Game) => {
     const handler = await getHandlerInfo(g.id).catch(() => ({ name: "generic", tools: [] }));
+    nav.gameTab = "mods";
     setGame({ game: g, handler });
   };
 
-  if (game) {
-    return (
-      <ErrorBoundary>
-        <GameView game={game.game} handler={game.handler} hasKey={hasKey} onBack={() => setGame(null)} />
-      </ErrorBoundary>
-    );
-  }
-
   return (
     <ErrorBoundary>
-      <PanelSection>
-        <Row>
-          <Pills options={[["games", "Games"], ["settings", "Settings"]]} value={tab} onChange={setTab} />
-        </Row>
-      </PanelSection>
-      {tab === "games" ? <GameList onPick={pick} /> : <SettingsTab onSaved={reloadSettings} />}
+      {game ? (
+        <GameView game={game.game} handler={game.handler} onBack={() => setGame(null)} />
+      ) : (
+        <>
+          <PanelSection>
+            <Row>
+              <Pills options={[["games", "Games"], ["settings", "Settings"]]} value={top} onChange={setTop} />
+            </Row>
+          </PanelSection>
+          {top === "games" ? <GameList onPick={pick} /> : <SettingsTab />}
+        </>
+      )}
     </ErrorBoundary>
   );
 }
 
-export default definePlugin(() => ({
-  name: "Mod Manager",
-  titleView: <div>Mod Manager</div>,
-  content: <Content />,
-  icon: <FaPuzzlePiece />,
-}));
+// ------------------------------------------------------------ full screen: get mods
+
+const SORTS: [NexusSort, string][] = [["trending", "Trending"], ["popular", "Popular"], ["new", "New"], ["updated", "Updated"]];
+
+function BrowsePage() {
+  const { appid } = useParams<{ appid: string }>();
+  const { data: games } = useAsync(() => listGames(), []);
+  const { data: settings } = useAsync(() => getSettings(), []);
+  const game = games?.find((g) => g.id === appid);
+  const [sort, setSort] = useState<NexusSort>("trending");
+  const [query, setQuery] = useState("");
+  const [searched, setSearched] = useState("");
+  const [compatibleOnly, setCompatibleOnly] = useState(true);
+  const { data, loading, error, reload } = useAsync(
+    () => (searched ? nexusSearch(appid, searched, compatibleOnly) : nexusBrowse(appid, sort, compatibleOnly)),
+    [appid, sort, searched, compatibleOnly],
+  );
+  const hasKey = !!settings?.nexus_api_key_set;
+
+  const pickSort = (s: NexusSort) => {
+    setQuery("");
+    setSearched("");
+    setSort(s);
+  };
+
+  return (
+    <div style={{ marginTop: 40, height: "calc(100% - 40px)", overflowY: "auto", padding: "16px 24px", boxSizing: "border-box" }}>
+      <div style={{ fontSize: 13, opacity: 0.7, textTransform: "uppercase", letterSpacing: 1 }}>{game?.name ?? ""}</div>
+      <div style={{ fontSize: 26, fontWeight: 700, margin: "2px 0 12px" }}>Get mods</div>
+
+      <Focusable style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }} flow-children="horizontal">
+        <div style={{ flex: "1 1 320px" }}>
+          <TextField
+            label="Search Nexus"
+            value={query}
+            bShowClearAction
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                setSearched(query.trim());
+              }
+            }}
+          />
+        </div>
+        <DialogButton style={{ width: "auto", minWidth: 120 }} onClick={() => setSearched(query.trim())}>
+          <FaSearch style={{ marginRight: 8 }} /> Search
+        </DialogButton>
+      </Focusable>
+
+      <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", margin: "12px 0" }}>
+        <Pills options={SORTS} value={searched ? null : sort} onChange={pickSort} />
+        {data?.version && (
+          <div style={{ minWidth: 300 }}>
+            <ToggleField
+              label={`Only mods for ${data.version}`}
+              checked={compatibleOnly}
+              onChange={setCompatibleOnly}
+              bottomSeparator="none"
+            />
+          </div>
+        )}
+      </div>
+
+      {!hasKey && settings && (
+        <Note>Add your Nexus API key in Mod Manager settings to download. You can still look around.</Note>
+      )}
+      <Downloads />
+
+      {error ? (
+        <div style={{ padding: "24px 0" }}>
+          <ErrorText text={error} />
+          <DialogButton style={{ width: 160, marginTop: 12 }} onClick={reload}>Try again</DialogButton>
+        </div>
+      ) : loading ? (
+        <ModGrid>{Array.from({ length: 8 }, (_, i) => <div key={i} style={cardSkeleton} />)}</ModGrid>
+      ) : data?.mods.length === 0 ? (
+        <Note>
+          {searched ? `Nothing matched "${searched}".` : "No mods here yet."}
+          {compatibleOnly && data.version && ` Turn off "Only mods for ${data.version}" to see older mods.`}
+        </Note>
+      ) : (
+        <ModGrid>
+          {data?.mods.map((m) => (
+            <ModCard key={m.mod_id} mod={m} onOpen={() => game && hasKey && showModal(<NexusInstallModal game={game} hit={m} />)} />
+          ))}
+        </ModGrid>
+      )}
+    </div>
+  );
+}
+
+const cardSkeleton = { height: 210, borderRadius: 4, background: "#ffffff0d" };
+
+function ModGrid({ children }: { children: ReactNode }) {
+  return (
+    <Focusable
+      flow-children="grid"
+      style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, paddingBottom: 24 }}
+    >
+      {children}
+    </Focusable>
+  );
+}
+
+function ModCard({ mod, onOpen }: { mod: NexusMod; onOpen: () => void }) {
+  return (
+    <DialogButton onClick={onOpen} style={{ padding: 0, height: 210, textAlign: "left", overflow: "hidden", display: "block" }}>
+      <div style={{ height: 110, background: mod.image ? `center / cover no-repeat url("${mod.image}")` : "#ffffff0d" }} />
+      <div style={{ padding: "8px 10px" }}>
+        <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.25, height: 36, overflow: "hidden" }}>{mod.name}</div>
+        <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>{mod.author}</div>
+        <div style={{ fontSize: 12, opacity: 0.7 }}>
+          {mod.downloads.toLocaleString()} downloads · updated {mod.updated_at.slice(0, 10)}
+        </div>
+      </div>
+    </DialogButton>
+  );
+}
+
+function NexusInstallModal({ game, hit, closeModal }: { game: Game; hit: NexusMod; closeModal?: () => void }) {
+  const { data: files, loading, error } = useAsync(() => nexusModFiles(game.id, hit.mod_id), [hit.mod_id]);
+  const [selected, setSelected] = useState<NexusFile | null>(null);
+  const [needsNxm, setNeedsNxm] = useState(false);
+  const [nxm, setNxm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (files && !selected) setSelected(files[0] ?? null);
+  }, [files]);
+
+  const submit = async () => {
+    if (busy || (needsNxm ? !nxm.trim() : !selected)) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = needsNxm
+        ? await nexusInstallNxm(game.id, nxm.trim(), hit.name)
+        : await nexusInstall(game.id, hit.mod_id, selected!.file_id, hit.name);
+      if (res.needs_nxm) {
+        setNeedsNxm(true);
+        return;
+      }
+      startJob(res.job, res.name);
+      closeModal?.();
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <ConfirmModal
+      strTitle={hit.name}
+      strOKButtonText={busy ? "Starting..." : "Install"}
+      onOK={submit}
+      onCancel={closeModal}
+      bHideCloseIcon
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {hit.summary && <Note>{hit.summary}</Note>}
+        {loading && <Note>Loading files...</Note>}
+        {error && <ErrorText text={error} />}
+        {!needsNxm &&
+          files?.map((f) => (
+            <DialogButton
+              key={f.file_id}
+              onClick={() => setSelected(f)}
+              style={{
+                textAlign: "left",
+                padding: 10,
+                border: `2px solid ${selected?.file_id === f.file_id ? BLUE : "transparent"}`,
+              }}
+            >
+              <div style={{ fontSize: 15 }}>{selected?.file_id === f.file_id ? "● " : ""}{f.name}</div>
+              <div style={{ fontSize: 13, opacity: 0.7 }}>
+                {[f.category, f.version && `v${f.version}`, f.is_primary && "recommended"].filter(Boolean).join(" · ")}
+              </div>
+            </DialogButton>
+          ))}
+        {!loading && files?.length === 0 && <Note>This mod has no files to download.</Note>}
+        {needsNxm && (
+          <>
+            <Note>
+              Free Nexus accounts need a download link from the website. Open this mod on nexusmods.com, press
+              "Mod manager download", copy the nxm:// link, and paste it here.
+            </Note>
+            <TextField label="nxm:// link" value={nxm} bShowClearAction onChange={(e) => setNxm(e.target.value)} />
+          </>
+        )}
+        {err && <ErrorText text={err} />}
+      </div>
+    </ConfirmModal>
+  );
+}
+
+export default definePlugin(() => {
+  routerHook.addRoute(BROWSE_ROUTE, BrowsePage, { exact: true });
+  addEventListener("install_progress", onInstallProgress);
+  addEventListener("install_done", onInstallDone);
+  return {
+    name: "Mod Manager",
+    titleView: <div>Mod Manager</div>,
+    content: <Content />,
+    icon: <FaPuzzlePiece />,
+    onDismount() {
+      routerHook.removeRoute(BROWSE_ROUTE);
+      removeEventListener("install_progress", onInstallProgress);
+      removeEventListener("install_done", onInstallDone);
+    },
+  };
+});

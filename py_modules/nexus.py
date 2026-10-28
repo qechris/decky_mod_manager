@@ -23,9 +23,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-USER_AGENT = "decky-mod-manager/0.2"
+USER_AGENT = "decky-mod-manager/0.2.0"
 V3_BASE = "https://api.nexusmods.com/v3"
 V2_GRAPHQL_URL = "https://api.nexusmods.com/v2/graphql"
 GAMES_INDEX_URL = "https://api.nexusmods.com/v1/games.json"
@@ -44,7 +44,7 @@ query SearchMods($q: String!, $domain: String!, $count: Int!) {
     sort: { downloads: { direction: DESC } }
     count: $count
   ) {
-    nodes { modId name summary uploader { name } downloads endorsements thumbnailUrl }
+    nodes { modId name summary uploader { name } downloads endorsements thumbnailUrl updatedAt }
   }
 }
 """
@@ -98,6 +98,7 @@ class NexusMod:
     downloads: int
     endorsements: int
     image: str | None
+    updated_at: str
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -252,7 +253,7 @@ class NexusClient:
             body={
                 "filters": {"games": [domain], "include_adult": False, "time_range": BROWSE_SORTS[sort]},
                 "sort": {"field": sort},
-                "pagination": {"page_size": 30},
+                "pagination": {"page_size": 100},
             },
         )
         return [
@@ -264,6 +265,7 @@ class NexusClient:
                 downloads=int(m.get("downloads") or 0),
                 endorsements=int(m.get("endorsements") or 0),
                 image=m.get("thumbnail_url"),
+                updated_at=m.get("updated_at") or "",
             )
             for m in _data(payload).get("mods") or []
         ]
@@ -272,7 +274,7 @@ class NexusClient:
         payload = await asyncio.to_thread(
             _request_json,
             V2_GRAPHQL_URL,
-            body={"query": _SEARCH_GQL, "variables": {"q": query, "domain": domain, "count": 30}},
+            body={"query": _SEARCH_GQL, "variables": {"q": query, "domain": domain, "count": 100}},
         )
         if payload.get("errors"):
             raise NexusError(f"Nexus search failed: {payload['errors'][0].get('message')}")
@@ -285,6 +287,7 @@ class NexusClient:
                 downloads=int(m.get("downloads") or 0),
                 endorsements=int(m.get("endorsements") or 0),
                 image=m.get("thumbnailUrl"),
+                updated_at=m.get("updatedAt") or "",
             )
             for m in ((payload.get("data") or {}).get("mods") or {}).get("nodes") or []
         ]
@@ -344,14 +347,19 @@ class NexusClient:
             raise NexusError("Nexus returned no download link.")
         return links[0]["url"]
 
-    async def download_to(self, url: str, dest: Path) -> Path:
+    async def download_to(self, url: str, dest: Path, on_progress: Callable[[float], None] | None = None) -> Path:
         def _do() -> Path:
             req = urllib.request.Request(_percent_encode_path(url), headers={"User-Agent": USER_AGENT})
             dest.parent.mkdir(parents=True, exist_ok=True)
             try:
                 with urllib.request.urlopen(req, context=_SSL_CONTEXT, timeout=120) as resp, dest.open("wb") as fh:
+                    total = int(resp.headers.get("Content-Length") or 0)
+                    done = 0
                     while chunk := resp.read(256 * 1024):
                         fh.write(chunk)
+                        done += len(chunk)
+                        if total and on_progress:
+                            on_progress(done / total)
             except (urllib.error.URLError, OSError) as e:
                 dest.unlink(missing_ok=True)
                 raise NexusError(f"Download failed: {e}") from e

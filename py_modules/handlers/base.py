@@ -56,6 +56,11 @@ class BaseHandler:
     def disable(self, game: GameLike, files: list[str], backup_root: Path) -> None:
         raise NotImplementedError
 
+    def game_version(self, game: GameLike) -> tuple[str, str] | None:
+        """``(label, ISO date)`` of the installed game version, if mods made
+        before that date won't work on it. Used to hide outdated mods."""
+        return None
+
     # ----- optional tools surfaced in the UI -----------------------------
 
     def tools(self) -> list[dict]:
