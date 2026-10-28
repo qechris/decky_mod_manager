@@ -116,20 +116,22 @@ function Pills<T extends string>({
   return (
     <Focusable style={{ display: "flex", gap: 4, flexWrap: "wrap" }} flow-children="horizontal">
       {options.map(([id, label]) => (
-        <Focusable
+        <DialogButton
           key={id}
-          onActivate={() => onChange(id)}
           onClick={() => onChange(id)}
           style={{
-            padding: "6px 10px",
+            width: "auto",
+            minWidth: 0,
+            height: 32,
+            padding: "0 12px",
             borderRadius: 16,
             fontSize: 13,
-            background: value === id ? "#1a9fff" : "#ffffff1a",
-            color: value === id ? "#fff" : "#dcdedf",
+            background: value === id ? "#1a9fff" : undefined,
+            color: value === id ? "#fff" : undefined,
           }}
         >
           {label}
-        </Focusable>
+        </DialogButton>
       ))}
     </Focusable>
   );
