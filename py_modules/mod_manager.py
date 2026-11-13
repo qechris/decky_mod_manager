@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import tarfile
@@ -243,7 +244,7 @@ class ModManager:
 
     async def install_archive(
         self,
-        game_id: str,
+        game: Game,
         archive_path: str,
         display_name: str | None = None,
         *,
@@ -256,16 +257,20 @@ class ModManager:
 
         mod_id = uuid.uuid4().hex[:12]
         name = display_name or archive.stem
-        dest = self.library_dir / game_id / mod_id
+        dest = self.library_dir / game.id / mod_id
         dest.mkdir(parents=True, exist_ok=True)
 
-        await asyncio.to_thread(_extract_archive, archive, dest)
-        self.handler_for(game_id).post_install_payload(dest)
+        try:
+            await asyncio.to_thread(_extract_archive, archive, dest)
+            self.handler_for(game.id).post_install_payload(dest, Path(game.install_path))
+        except Exception:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
 
-        mod = Mod(id=mod_id, name=name, game_id=game_id, source=source, nexus_mod_id=nexus_mod_id)
-        self._state.setdefault(game_id, {})[mod_id] = mod
+        mod = Mod(id=mod_id, name=name, game_id=game.id, source=source, nexus_mod_id=nexus_mod_id)
+        self._state.setdefault(game.id, {})[mod_id] = mod
         self._save_state()
-        _LOG.info("mod-manager: installed mod %s (%s) for game %s", name, mod_id, game_id)
+        _LOG.info("mod-manager: installed mod %s (%s) for game %s", name, mod_id, game.id)
         return mod
 
     # ----------------------------------------------------------- enable/disable
@@ -287,7 +292,9 @@ class ModManager:
         if not mod.enabled:
             return mod
         backup_root = self.backups_dir / game.id / mod_id
-        self.handler_for(game.id).disable(game, mod.files, backup_root)
+        files = self._release_overwritten(game, mod, backup_root)
+        self.handler_for(game.id).disable(game, files, backup_root)
+        self._relink_shadowed(game, mod, files)
         mod.enabled = False
         mod.files = []
         self._save_state()
@@ -308,6 +315,37 @@ class ModManager:
 
     # ----------------------------------------------------------- helpers
 
+    def _release_overwritten(self, game: Game, mod: Mod, backup_root: Path) -> list[str]:
+        """Drop files a later-enabled mod has since replaced, handing our
+        backup of the vanilla file to that mod so disabling it restores it."""
+        own_root = (self.library_dir / game.id / mod.id).resolve()
+        kept: list[str] = []
+        for rel in mod.files:
+            target = Path(game.install_path) / rel
+            if not target.is_symlink() or Path(os.readlink(target)).resolve().is_relative_to(own_root):
+                kept.append(rel)
+                continue
+            owner = next((m for m in self.list_mods(game.id) if m.enabled and m.id != mod.id and rel in m.files), None)
+            backup = backup_root / rel
+            if owner and backup.exists():
+                dest = self.backups_dir / game.id / owner.id / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(backup), str(dest))
+        return kept
+
+    def _relink_shadowed(self, game: Game, mod: Mod, files: list[str]) -> None:
+        """Point files this mod had replaced back at the other enabled mod
+        that also ships them."""
+        for other in self.list_mods(game.id):
+            if not other.enabled or other.id == mod.id:
+                continue
+            for rel in set(files) & set(other.files):
+                src = self.library_dir / game.id / other.id / rel
+                target = Path(game.install_path) / rel
+                if src.exists() and not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.symlink(src, target)
+
     def _require(self, game_id: str, mod_id: str) -> Mod:
         mod = self.get_mod(game_id, mod_id)
         if mod is None:
@@ -318,15 +356,31 @@ class ModManager:
 # ---------------------------------------------------------------- utilities
 
 
-def _extract_archive(archive: Path, dest: Path) -> None:
+def _archive_kind(archive: Path) -> str:
+    """Nexus CDN files can have no extension, so check the file header first."""
+    with archive.open("rb") as f:
+        head = f.read(8)
+    if head.startswith(b"PK"):
+        return "zip"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return "7z"
+    if head.startswith(b"Rar!"):
+        return "rar"
+    if tarfile.is_tarfile(archive):
+        return "tar"
     name = archive.name.lower()
-    if name.endswith(".zip"):
+    return next((k for k in ("zip", "7z", "rar") if name.endswith("." + k)), "")
+
+
+def _extract_archive(archive: Path, dest: Path) -> None:
+    kind = _archive_kind(archive)
+    if kind == "zip":
         with zipfile.ZipFile(archive) as zf:
             zf.extractall(dest)
-    elif name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
+    elif kind == "tar":
         with tarfile.open(archive) as tf:
-            tf.extractall(dest)
-    elif name.endswith(".7z"):
+            _safe_tar_extract(tf, dest)
+    elif kind == "7z":
         _extract_via_python_or_subprocess(
             archive, dest,
             py_module="py7zr",
@@ -334,7 +388,7 @@ def _extract_archive(archive: Path, dest: Path) -> None:
             cli_bins=("7z", "7zz", "7za", "7zr"),
             cli_args=("x", "-y", "-o{dest}", "{archive}"),
         )
-    elif name.endswith(".rar"):
+    elif kind == "rar":
         _extract_via_python_or_subprocess(
             archive, dest,
             py_module="rarfile",
@@ -344,6 +398,18 @@ def _extract_archive(archive: Path, dest: Path) -> None:
         )
     else:
         raise ValueError(f"unsupported archive format: {archive.name}")
+
+
+def _safe_tar_extract(tf: tarfile.TarFile, dest: Path) -> None:
+    """Mod archives are untrusted: refuse paths or links that leave ``dest``."""
+    if hasattr(tarfile, "data_filter"):
+        tf.extractall(dest, filter="data")
+        return
+    root = dest.resolve()
+    for m in tf.getmembers():
+        if not (m.isfile() or m.isdir()) or not (dest / m.name).resolve().is_relative_to(root):
+            raise ValueError(f"unsafe entry in archive: {m.name}")
+    tf.extractall(dest)
 
 
 def _extract_via_python_or_subprocess(

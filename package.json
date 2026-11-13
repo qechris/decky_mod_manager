@@ -1,6 +1,6 @@
 {
   "name": "mod-manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Decky plugin for installing and managing game mods on Steam Deck.",
   "scripts": {

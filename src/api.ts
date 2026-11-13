@@ -29,23 +29,33 @@ export interface SettingsView {
   nexus_api_key_set: boolean;
 }
 
-export interface NexusSearchHit {
+export interface NexusMod {
   mod_id: number;
   name: string;
+  summary: string;
   author: string;
   downloads: number;
   endorsements: number;
   image: string | null;
+  updated_at: string;
 }
 
-export interface NexusModFile {
+export interface NexusBrowseResult {
+  version: string | null;
+  mods: NexusMod[];
+}
+
+export interface NexusFile {
   file_id: number;
   name: string;
   version: string;
-  size_kb: number;
   category: string;
   is_primary: boolean;
 }
+
+export type NexusSort = "trending" | "popular" | "new" | "updated";
+
+export type NexusInstallResult = { job: string; name: string; needs_nxm?: undefined } | { needs_nxm: true };
 
 export interface ScriptMergerStatus {
   installed: boolean;
@@ -96,14 +106,11 @@ export const getSettings = callable<[], SettingsView>("get_settings");
 export const setNexusApiKey = callable<[string], SettingsView>("set_nexus_api_key");
 
 // -------- nexus --------
-export const nexusResolveDomain =
-  callable<[string], { domain: string | null; appid: string; name: string }>("nexus_resolve_domain");
-export const nexusSearch = callable<[string, string], NexusSearchHit[]>("nexus_search");
-export const nexusTrending = callable<[string], any[]>("nexus_trending");
-export const nexusModInfo = callable<[string, number], any>("nexus_mod_info");
-export const nexusModFiles = callable<[string, number], NexusModFile[]>("nexus_mod_files");
-export const nexusInstall =
-  callable<[string, number, number, string, string | null, number | null], Mod>("nexus_install");
+export const nexusBrowse = callable<[string, NexusSort, boolean], NexusBrowseResult>("nexus_browse");
+export const nexusSearch = callable<[string, string, boolean], NexusBrowseResult>("nexus_search");
+export const nexusModFiles = callable<[string, number], NexusFile[]>("nexus_mod_files");
+export const nexusInstall = callable<[string, number, number, string], NexusInstallResult>("nexus_install");
+export const nexusInstallNxm = callable<[string, string, string | null], NexusInstallResult>("nexus_install_nxm");
 
 // -------- handler tools --------
 export const scriptMerger =

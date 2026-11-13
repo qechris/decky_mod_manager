@@ -26,8 +26,9 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
-from nexus import NexusClient, NexusError
+from nexus import NexusClient, NexusError, NexusKeyRequired
 
 SCRIPT_MERGER_NEXUS_MOD_ID = 484  # https://www.nexusmods.com/witcher3/mods/484
 DATA_DIR = Path.home() / ".local" / "share" / "decky-mod-manager"
@@ -107,13 +108,17 @@ def _status(game_install: Path) -> dict:
 async def _install(api_key: str) -> dict:
     nx = NexusClient(DATA_DIR / "cache")
     files = await nx.mod_files("witcher3", SCRIPT_MERGER_NEXUS_MOD_ID, api_key)
-    primary = next((f for f in files if f.is_primary), None) or (files[0] if files else None)
-    if primary is None:
+    if not files:
         raise NexusError("Script Merger has no downloadable files on Nexus.")
-    link = await nx.download_link("witcher3", SCRIPT_MERGER_NEXUS_MOD_ID, primary.file_id, api_key)
+    try:
+        link = await nx.download_link("witcher3", files[0].file_id, api_key)
+    except NexusKeyRequired as e:
+        raise NexusError(
+            "Free Nexus accounts can't download Script Merger directly. "
+            "Use the native mergers instead."
+        ) from e
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    archive = DATA_DIR / "cache" / f"script-merger-{primary.file_id}{Path(primary.name).suffix or '.zip'}"
+    archive = DATA_DIR / "cache" / Path(urlparse(link).path).name
     await nx.download_to(link, archive)
 
     # Extract into the canonical tool dir.

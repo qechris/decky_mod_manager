@@ -93,10 +93,12 @@ pnpm run build
 
 ## Adding a new game handler
 
-1. Create `py_modules/handlers/<game>.py` subclassing `BaseHandler`.
-   Implement `post_install_payload`, `enable`, `disable`. Look at
+1. Create `py_modules/handlers/<game>.py` subclassing `BaseHandler`
+   (or `GenericHandler` if plain file mirroring is enough). Set
+   `games = {"<steam appid>": "<nexus domain>"}` and override
+   `post_install_payload`, `enable`, `disable` as needed. Look at
    `witcher3.py` and `kingdom_come.py` for templates.
-2. Register both the appid and the handler class in `py_modules/handlers/__init__.py`.
+2. Add the class to `HANDLERS` in `py_modules/handlers/__init__.py`.
 3. Add `tests/test_<game>.py` covering the 4 common archive shapes
    (already-wrapped, single-mod-folder, bare contents, vortex-wrapper),
    plus any game-specific load-order or settings file management.

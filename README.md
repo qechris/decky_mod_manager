@@ -10,8 +10,10 @@ detour.
 
 ## Highlights
 
-- 🎮 **Browse Nexus from the QAM.** Search, download, and install mods
-  without leaving Game Mode. Bring your own [Nexus API key](https://www.nexusmods.com/users/myaccount?tab=api).
+- 🎮 **Browse Nexus from the QAM.** Trending, popular, new, search,
+  download, and install mods without leaving Game Mode. Uses the
+  [Nexus Mods v3 API](https://api.nexusmods.com/openapi.yaml). Bring your
+  own [Nexus API key](https://www.nexusmods.com/settings/api-keys).
 - 🔌 **First-class handlers for Witcher 3 and Kingdom Come: Deliverance**
   (both KCD1 and KCD2). Layout normalization, `mods.settings` / `mod_order.txt`
   management, and game-specific tools.
@@ -53,7 +55,9 @@ for the full step-by-step.
 | Kingdom Come: Deliverance II | 1771300 | `kingdom_come` | Same layout as KCD1 |
 | Everything else | – | `generic` | File-mirror via symlinks; toggle on/off |
 
-Want first-class support for another game? [Open a feature request](https://github.com/qa-chrisb/decky_mod_manager/issues/new?template=feature.yml).
+Adding a game is one small class: see
+[Adding a new game handler](CONTRIBUTING.md#adding-a-new-game-handler).
+Or [open a feature request](https://github.com/qa-chrisb/decky_mod_manager/issues/new?template=feature.yml).
 
 ## On-disk layout
 
